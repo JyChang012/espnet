@@ -30,7 +30,7 @@ class EncoderLayer(Module):
     """
     self_attn: nn.Module
     feed_forward: nn.Module
-    dropout_rate: nn.Module
+    dropout_rate: float
     normalize_before = True
     concat_after = False
     stochastic_depth_rate = 0.
@@ -47,13 +47,13 @@ class EncoderLayer(Module):
         """Compute encoded features.
 
         Args:
-            x_input (torch.Tensor): Input tensor (#batch, time, size).
-            mask (torch.Tensor): Mask tensor for the input (#batch, time).
-            cache (torch.Tensor): Cache tensor of the input (#batch, time - 1, size).
+            x_input (jax.Array): Input tensor (#batch, time, size).
+            mask (jax.Array): Mask tensor for the input (#batch, time).
+            cache (jax.Array): Cache tensor of the input (#batch, time - 1, size).
 
         Returns:
-            torch.Tensor: Output tensor (#batch, time, size).
-            torch.Tensor: Mask tensor (#batch, time).
+            jax.Array: Output tensor (#batch, time, size).
+            jax.Array: Mask tensor (#batch, time).
 
         """
         deterministic = merge_param('deterministic', deterministic, self.deterministic)
@@ -70,7 +70,7 @@ class EncoderLayer(Module):
 
         residual = x
         if self.normalize_before:
-            x = self.norm1(x)
+            x = LayerNorm()(x)
 
         # currently ignore cache
         x_q = x
