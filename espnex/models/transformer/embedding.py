@@ -1,4 +1,5 @@
 import math
+from typing import Literal
 
 import numpy as np
 import flax.linen as nn
@@ -13,7 +14,7 @@ from jax import Array
 def sinusoidal_init(max_len=2048,
                     min_scale=1.0,
                     max_scale=10000.0,
-                    init_type='flax'):
+                    init_type='default'):
     """1D Sinusoidal Position Embedding Initializer. Copy from https://github.com/google/flax/tree/main/examples
     Args:
         max_len: maximum possible length for the input.
@@ -45,13 +46,13 @@ def sinusoidal_init(max_len=2048,
         scale_factor = -np.log(max_scale / min_scale) / d_feature
         div_term = min_scale * np.exp(np.arange(0, d_feature, 2) * scale_factor)
         pe[:, ::2] = np.sin(position * div_term)
-        if max_len % 2:
-            position = position[:-1]
+        if div_term.shape[0] % 2:
+            div_term = div_term[:-1]
         pe[:, 1::2] = np.cos(position * div_term)
         pe = pe[np.newaxis, :, :]  # [1, max_len, d_feature]
         return jnp.array(pe)
 
-    if init_type == 'flax':
+    if init_type == 'default':
         return init
     else:
         return init_espnet
@@ -61,9 +62,10 @@ class AddPositionalEncoding(Module):
     dropout_rate: float
     max_len: int = 5000  # initial lengths of positional encoding
     reverse: bool = False  # currently not used
+    init_type: Literal['default', 'espnet'] = 'default'
 
     @nn.compact
-    def __call__(self, x: Array, deterministic: bool = True) -> Array:
+    def __call__(self, x: Array, deterministic: bool) -> Array:
         """Add positional encoding. Dynamically increase T of positional encoding. Might have performance issue when using with JIT
 
         Args:
@@ -75,7 +77,7 @@ class AddPositionalEncoding(Module):
         length = x.shape[1]
         max_len = max(self.max_len, length)
         pos_emb_shape = (1, max_len, x.shape[-1])
-        pos_emb = sinusoidal_init(max_len=max_len)(None, pos_emb_shape, None)
+        pos_emb = sinusoidal_init(max_len=max_len, init_type=self.init_type)(None, pos_emb_shape, None)
         x_scale = np.sqrt(x.shape[-1])
         x = x * x_scale + pos_emb[:, :length, :]
         x = Dropout(self.dropout_rate)(x, deterministic)
