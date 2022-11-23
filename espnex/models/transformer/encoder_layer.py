@@ -4,8 +4,9 @@ import flax.linen as nn
 from flax.linen import LayerNorm, Dense, Dropout, Module
 import jax
 import jax.numpy as jnp
-from flax.linen.module import merge_param
+from flax.linen.module import merge_param, compact
 from jax.random import bernoulli
+from flax.linen import cond
 
 
 class EncoderLayer(Module):
@@ -31,15 +32,30 @@ class EncoderLayer(Module):
     self_attn: nn.Module
     feed_forward: nn.Module
     dropout_rate: float
-    normalize_before = True
-    concat_after = False
-    stochastic_depth_rate = 0.
-    deterministic: Optional[bool] = False
+    normalize_before: bool = True
+    concat_after: bool = False
+    stochastic_depth_rate: float = 0.
+    deterministic: Optional[bool] = None
     rng_collection: str = 'skip_layer'
 
-    @nn.compact
+    @compact
     def __call__(
-            self, x: jax.Array,
+            self,
+            x: jax.Array,
+            mask: jax.Array,
+            cache: Optional[jax.Array] = None,
+            deterministic: Optional[bool] = None
+    ):
+        deterministic = merge_param('deterministic', deterministic, self.deterministic)
+        if deterministic or self.is_initializing() or self.stochastic_depth_rate == 0:
+            return self.forward(x, mask, cache, deterministic)
+        else:
+            skip = bernoulli(self.make_rng(self.rng_collection), self.stochastic_depth_rate, ())
+            return cond(skip, lambda mdl: (x, mask), lambda mdl: mdl.forward(x, mask, cache, deterministic), self)
+
+    def forward(
+            self,
+            x: jax.Array,
             mask: jax.Array,
             cache: Optional[jax.Array] = None,
             deterministic: Optional[bool] = None
@@ -56,16 +72,6 @@ class EncoderLayer(Module):
             jax.Array: Mask tensor (#batch, time).
 
         """
-        deterministic = merge_param('deterministic', deterministic, self.deterministic)
-        if not deterministic:
-            rng = self.make_rng(self.rng_collection)
-            skip_layer = bernoulli(rng, self.stochastic_depth_rate, (1,)).item()
-        else:
-            skip_layer = False
-
-        if skip_layer:
-            return x, mask
-
         stoch_layer_coeff = 1.0 / (1 - self.stochastic_depth_rate)
 
         residual = x
@@ -76,11 +82,11 @@ class EncoderLayer(Module):
         x_q = x
 
         if self.concat_after:
-            x_concat = jnp.concatenate((x, self.self_attn(x_q, x, x, mask)), axis=-1)
+            x_concat = jnp.concatenate((x, self.self_attn(x_q, x, mask, deterministic)), axis=-1)
             x = residual + stoch_layer_coeff * Dense(x.shape[-1])(x_concat)
         else:
             x = residual + stoch_layer_coeff * Dropout(self.dropout_rate)(
-                self.self_attn(x_q, x, x, mask), deterministic=deterministic
+                self.self_attn(x_q, x, mask, deterministic), deterministic=deterministic
             )
 
         if not self.normalize_before:
@@ -89,7 +95,7 @@ class EncoderLayer(Module):
         residual = x
         if self.normalize_before:
             x = LayerNorm()(x)
-        x = residual + stoch_layer_coeff * Dropout(self.dropout_rate)(self.feed_forward(x))
+        x = residual + stoch_layer_coeff * Dropout(self.dropout_rate)(self.feed_forward(x), deterministic)
         if not self.normalize_before:
             x = LayerNorm()(x)
 
