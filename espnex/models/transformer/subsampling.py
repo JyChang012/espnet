@@ -1,6 +1,7 @@
 from typing import Optional, Sequence, Union, Tuple
 
 import flax.linen as nn
+import numpy as np
 from flax.linen import LayerNorm, Dense, Dropout, Module, Conv
 import jax
 import jax.numpy as jnp
@@ -12,6 +13,16 @@ from espnet.nets.pytorch_backend.transformer.subsampling import check_short_utt,
 from ..transformer.embedding import AddPositionalEncoding
 
 
+def get_output_lengths(
+        lengths: Union[int, Array],
+        kernel_sizes: Union[int, Array],
+        strides: Union[int, Array] = 1,
+        paddings: Union[int, Array] = 0,
+        dilations: Union[int, Array] = 1
+) -> Union[int, Array]:
+    return (lengths + 2 * paddings - dilations * (kernel_sizes - 1) - 1) // strides + 1
+
+
 class Conv2dSubsampling(nn.Module):
     odim: int
     dropout_rate: float
@@ -20,21 +31,21 @@ class Conv2dSubsampling(nn.Module):
     pos_enc: Optional[Module] = None
 
     @nn.compact
-    def __call__(self, x: Array, mask: Optional[Array], deterministic: bool) -> Union[Tuple[Array, Array], Array]:
+    def __call__(self, x: Array, ilens: Optional[Array], deterministic: bool) -> Union[Tuple[Array, Array], Array]:
         """Subsample x.
 
         Args:
             x (jax.Array): Input tensor (#batch, time, idim).
-            mask (jax.Array): Input mask (#batch, time).
+            ilens (jax.Array): Input lengths (#batch,).
 
         Returns:
             jax.Array: Subsampled tensor (#batch, time', odim),
-            jax.Array: Subsampled mask (#batch, time'),
+            jax.Array: Subsampled lengths (#batch,),
 
         """
         x = jnp.expand_dims(x, -1)  # (b, t, f, c=1)
         for kernel, stride in zip(self.kernel_sizes, self.strides):
-            x = Conv(self.odim, [kernel], stride, padding=0)(x)  # (b, t, f, d)
+            x = Conv(self.odim, [kernel] * 2, stride, padding=0)(x)  # (b, t, f, d)
             x = nn.relu(x)
         b, t, *_ = x.shape
         x = x.reshape((b, t, -1))  # (b, t, f * d)
@@ -43,12 +54,13 @@ class Conv2dSubsampling(nn.Module):
             x = AddPositionalEncoding(self.dropout_rate, init_type='espnet')(x, deterministic)
         else:
             x = self.pos_enc(x)
-        if mask is None:
+
+        if ilens is None:
             return x
         else:
             for kernel, stride in zip(self.kernel_sizes, self.strides):
-                mask = mask[:, :-(kernel - 1):stride]
-            return x, mask
+                ilens = get_output_lengths(ilens, kernel, stride)
+            return x, ilens
 
 
 defaults_settings = {
