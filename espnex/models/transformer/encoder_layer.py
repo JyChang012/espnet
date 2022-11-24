@@ -1,12 +1,11 @@
-from typing import Optional
+from typing import Optional, Tuple
 
 import flax.linen as nn
-from flax.linen import LayerNorm, Dense, Dropout, Module
 import jax
 import jax.numpy as jnp
-from flax.linen.module import merge_param, compact
+from flax.linen import Dense, Dropout, LayerNorm, Module, cond
+from flax.linen.module import Array, compact, merge_param
 from jax.random import bernoulli
-from flax.linen import cond
 
 
 class EncoderLayer(Module):
@@ -29,41 +28,49 @@ class EncoderLayer(Module):
             During training, the layer may skip residual computation and return input
             as-is with given probability.
     """
+
     self_attn: nn.Module
     feed_forward: nn.Module
     dropout_rate: float
     normalize_before: bool = True
     concat_after: bool = False
-    stochastic_depth_rate: float = 0.
+    stochastic_depth_rate: float = 0.0
     deterministic: Optional[bool] = None
-    rng_collection: str = 'skip_layer'
+    rng_collection: str = "skip_layer"
 
     @compact
     def __call__(
-            self,
-            x: jax.Array,
-            mask: jax.Array,
-            cache: Optional[jax.Array] = None,
-            deterministic: Optional[bool] = None
+        self,
+        x: jax.Array,
+        mask: jax.Array,
+        cache: Optional[jax.Array] = None,
+        deterministic: Optional[bool] = None,
     ):
-        deterministic = merge_param('deterministic', deterministic, self.deterministic)
+        deterministic = merge_param("deterministic", deterministic, self.deterministic)
         if deterministic or self.is_initializing() or self.stochastic_depth_rate == 0:
             return self.forward(x, mask, cache, deterministic)
         else:
-            skip = bernoulli(self.make_rng(self.rng_collection), self.stochastic_depth_rate, ())
-            return cond(skip, lambda mdl: (x, mask), lambda mdl: mdl.forward(x, mask, cache, deterministic), self)
+            skip = bernoulli(
+                self.make_rng(self.rng_collection), self.stochastic_depth_rate, ()
+            )
+            return cond(
+                skip,
+                lambda mdl: (x, mask),
+                lambda mdl: mdl.forward(x, mask, cache, deterministic),
+                self,
+            )
 
     def forward(
-            self,
-            x: jax.Array,
-            mask: jax.Array,
-            cache: Optional[jax.Array] = None,
-            deterministic: Optional[bool] = None
-    ):
+        self,
+        x: Array,
+        mask: Array,
+        cache: Optional[jax.Array] = None,
+        deterministic: Optional[bool] = None,
+    ) -> Tuple[Array, Array]:
         """Compute encoded features.
 
         Args:
-            x_input (jax.Array): Input tensor (#batch, time, size).
+            x (jax.Array): Input tensor (#batch, time, size).
             mask (jax.Array): Mask tensor for the input (#batch, time).
             cache (jax.Array): Cache tensor of the input (#batch, time - 1, size).
 
@@ -82,7 +89,9 @@ class EncoderLayer(Module):
         x_q = x
 
         if self.concat_after:
-            x_concat = jnp.concatenate((x, self.self_attn(x_q, x, mask, deterministic)), axis=-1)
+            x_concat = jnp.concatenate(
+                (x, self.self_attn(x_q, x, mask, deterministic)), axis=-1
+            )
             x = residual + stoch_layer_coeff * Dense(x.shape[-1])(x_concat)
         else:
             x = residual + stoch_layer_coeff * Dropout(self.dropout_rate)(
@@ -95,12 +104,12 @@ class EncoderLayer(Module):
         residual = x
         if self.normalize_before:
             x = LayerNorm()(x)
-        x = residual + stoch_layer_coeff * Dropout(self.dropout_rate)(self.feed_forward(x), deterministic)
+        x = residual + stoch_layer_coeff * Dropout(self.dropout_rate)(
+            self.feed_forward(x), deterministic
+        )
         if not self.normalize_before:
             x = LayerNorm()(x)
 
         # currently ignore cache
 
         return x, mask
-
-

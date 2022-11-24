@@ -1,20 +1,20 @@
 from typing import Collection, Dict, List, Tuple, Union
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 import torch
 from typeguard import check_argument_types, check_return_type
-import jax.numpy as jnp
-import jax
 
-from espnet.nets.pytorch_backend.nets_utils import pad_list
 from espnet2.train.collate_fn import CommonCollateFn as TorchCollateFn
+from espnet.nets.pytorch_backend.nets_utils import pad_list
 
 
 class CommonCollateFn(TorchCollateFn):
     """Functor class of common_collate_fn(). Subclass from the torch version."""
 
     def __call__(
-            self, data: Collection[Tuple[str, Dict[str, np.ndarray]]]
+        self, data: Collection[Tuple[str, Dict[str, np.ndarray]]]
     ) -> Tuple[List[str], Dict[str, jax.Array]]:
         return common_collate_fn(
             data,
@@ -25,10 +25,10 @@ class CommonCollateFn(TorchCollateFn):
 
 
 def common_collate_fn(
-        data: Collection[Tuple[str, Dict[str, np.ndarray]]],
-        float_pad_value: Union[float, int] = 0.0,
-        int_pad_value: int = -32768,
-        not_sequence: Collection[str] = (),
+    data: Collection[Tuple[str, Dict[str, np.ndarray]]],
+    float_pad_value: Union[float, int] = 0.0,
+    int_pad_value: int = -32768,
+    not_sequence: Collection[str] = (),
 ) -> Tuple[List[str], Dict[str, jax.Array]]:
     """Concatenate ndarray-list to an array and convert to JAX Array.
 
