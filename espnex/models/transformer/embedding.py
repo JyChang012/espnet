@@ -1,5 +1,5 @@
 import math
-from typing import Literal
+from typing import Literal, Optional
 
 import numpy as np
 import flax.linen as nn
@@ -63,9 +63,10 @@ class AddPositionalEncoding(Module):
     max_len: int = 5000  # initial lengths of positional encoding
     reverse: bool = False  # currently not used
     init_type: Literal['default', 'espnet'] = 'default'
+    deterministic: Optional[bool] = None
 
     @nn.compact
-    def __call__(self, x: Array, deterministic: bool) -> Array:
+    def __call__(self, x: Array, deterministic: Optional[bool] = None) -> Array:
         """Add positional encoding. Dynamically increase T of positional encoding. Might have performance issue when using with JIT
 
         Args:
@@ -74,6 +75,7 @@ class AddPositionalEncoding(Module):
         Returns:
             jax.Array: Encoded tensor (batch, time, `*`).
         """
+        deterministic = merge_param('deterministic', deterministic, self.deterministic)
         length = x.shape[1]
         max_len = max(self.max_len, length)
         pos_emb_shape = (1, max_len, x.shape[-1])
