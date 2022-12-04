@@ -15,7 +15,7 @@ from flax.linen import (
     relu,
 )
 
-from espnex.asr.encoder.abs_encoder import AbsEncoder
+from espnex.asr.encoder.abc import AbsEncoder
 from espnex.models.transformer.embedding import AddPositionalEncoding
 from espnex.models.transformer.encoder_layer import EncoderLayer
 from espnex.models.transformer.multi_layer_conv import Conv1dLinear, MultiLayerConv1d
