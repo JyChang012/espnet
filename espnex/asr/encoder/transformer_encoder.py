@@ -1,4 +1,4 @@
-from typing import List, Literal, Optional
+from typing import List, Literal, Optional, Type
 
 import flax.linen as nn
 import jax
@@ -40,7 +40,7 @@ class TransformerEncoder(AbsEncoder):
         Literal["linear", "conv2d", "conv2d2", "conv2d6", "conv2d8", "embed"]
     ] = "conv2d"
     num_embeddings: Optional[int] = None
-    pos_enc_type: Module = AddPositionalEncoding
+    pos_enc_type: Type[Module] = AddPositionalEncoding
     normalize_before: bool = True
     concat_after: bool = False
     positionwise_layer_type: Literal["linear", "conv1d", "conv1d-linear"] = "linear"
