@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Tuple
+from typing import Tuple, Any, Optional
 
 from jax import Array
 from flax.linen import Module
@@ -14,6 +14,7 @@ class AbsFrontend(Module, ABC):
     def __call__(
             self,
             input: Array,
-            input_lengths: Array
+            input_lengths: Array,
+            deterministic: Optional[bool],
     ) -> Tuple[Array, Array]:
         raise NotImplementedError
