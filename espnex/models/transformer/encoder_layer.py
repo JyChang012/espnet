@@ -1,10 +1,11 @@
-from typing import Optional, Tuple
+from typing import Callable, Optional, Tuple
 
 import flax.linen as nn
 import jax
 import jax.numpy as jnp
 from flax.linen import Dense, Dropout, LayerNorm, Module, cond
-from flax.linen.module import Array, compact, merge_param
+from flax.linen.module import compact, merge_param
+from jax import Array
 from jax.random import bernoulli
 
 
@@ -35,17 +36,17 @@ class EncoderLayer(Module):
     normalize_before: bool = True
     concat_after: bool = False
     stochastic_depth_rate: float = 0.0
-    deterministic: Optional[bool] = None
     rng_collection: str = "skip_layer"
+    deterministic: Optional[bool] = None
 
     @compact
     def __call__(
         self,
-        x: jax.Array,
-        mask: jax.Array,
-        cache: Optional[jax.Array] = None,
+        x: Array,
+        mask: Array,
+        cache: Optional[Array] = None,
         deterministic: Optional[bool] = None,
-    ):
+    ) -> Tuple[Array, Array]:
         deterministic = merge_param("deterministic", deterministic, self.deterministic)
         if deterministic or self.is_initializing() or self.stochastic_depth_rate == 0:
             return self.forward(x, mask, cache, deterministic)
@@ -53,7 +54,7 @@ class EncoderLayer(Module):
             skip = bernoulli(
                 self.make_rng(self.rng_collection), self.stochastic_depth_rate, ()
             )
-            return cond(
+            return cond(  # type: ignore
                 skip,
                 lambda mdl: (x, mask),
                 lambda mdl: mdl.forward(x, mask, cache, deterministic),

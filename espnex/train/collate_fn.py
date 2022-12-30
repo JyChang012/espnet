@@ -49,37 +49,38 @@ def common_collate_fn(
     """
     assert check_argument_types()
     uttids = [u for u, _ in data]
-    data = [d for _, d in data]
+    data_list = [d for _, d in data]
 
-    assert all(set(data[0]) == set(d) for d in data), "dict-keys mismatching"
+    assert all(set(data_list[0]) == set(d) for d in data_list), "dict-keys mismatching"
     assert all(
-        not k.endswith("_lengths") for k in data[0]
-    ), f"*_lengths is reserved: {list(data[0])}"
+        not k.endswith("_lengths") for k in data_list[0]
+    ), f"*_lengths is reserved: {list(data_list[0])}"
 
-    output = {}
-    for key in data[0]:
+    array_dict = {}
+    for key in data_list[0]:
         # NOTE(kamo):
         # Each models, which accepts these values finally, are responsible
         # to repaint the pad_value to the desired value for each tasks.
-        if data[0][key].dtype.kind == "i":
+        pad_value: Union[int, float]
+        if data_list[0][key].dtype.kind == "i":
             pad_value = int_pad_value
         else:
             pad_value = float_pad_value
 
-        array_list = [d[key] for d in data]
+        array_list = [d[key] for d in data_list]
 
         # Assume the first axis is length:
         # tensor_list: Batch x (Length, ...)
         tensor_list = [torch.from_numpy(a) for a in array_list]
         # tensor: (Batch, Length, ...)
         jarray = jnp.array(pad_list(tensor_list, pad_value))
-        output[key] = jarray
+        array_dict[key] = jarray
 
         # lens: (Batch,)
         if key not in not_sequence:
-            lens = jnp.array([d[key].shape[0] for d in data], dtype=int)
-            output[key + "_lengths"] = lens
+            lens = jnp.array([d[key].shape[0] for d in data_list], dtype=int)
+            array_dict[key + "_lengths"] = lens
 
-    output = (uttids, output)
-    assert check_return_type(output)
-    return output
+    out = (uttids, array_dict)
+    assert check_return_type(out)
+    return out

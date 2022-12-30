@@ -1,8 +1,6 @@
-from typing import List, Literal, Optional, Type
+from typing import List, Literal, Optional, Tuple, Type, overload
 
 import flax.linen as nn
-import jax
-import jax.numpy as jnp
 from flax.linen import (
     Dense,
     Dropout,
@@ -12,8 +10,10 @@ from flax.linen import (
     MultiHeadDotProductAttention,
     Sequential,
     make_attention_mask,
+    merge_param,
     relu,
 )
+from jax import Array
 
 from espnex.asr.encoder.abc import AbsEncoder
 from espnex.models.transformer.embedding import AddPositionalEncoding
@@ -22,6 +22,8 @@ from espnex.models.transformer.multi_layer_conv import Conv1dLinear, MultiLayerC
 from espnex.models.transformer.positionwise_feed_forward import PositionwiseFeedForward
 from espnex.models.transformer.subsampling import get_default_conv2d_subsampling
 from espnex.models.utils import make_pad_mask
+from espnex.typing import OptionalArray
+
 
 # from typeguard import check_argument_types
 
@@ -36,8 +38,8 @@ class TransformerEncoder(AbsEncoder):
     dropout_rate: float = 0.1
     positional_dropout_rate: float = 0.1
     attention_dropout_rate: float = 0.0
-    input_layer: Optional[
-        Literal["linear", "conv2d", "conv2d2", "conv2d6", "conv2d8", "embed"]
+    input_layer: Literal[
+        "linear", "conv2d", "conv2d2", "conv2d6", "conv2d8", "embed"
     ] = "conv2d"
     num_embeddings: Optional[int] = None
     pos_enc_type: Type[Module] = AddPositionalEncoding
@@ -48,19 +50,39 @@ class TransformerEncoder(AbsEncoder):
     padding_idx: int = -1  # flax's Embed layer does not have this argument
     interctc_layer_idx: Optional[List[int]] = None  # currently ignore interctc
     interctc_use_conditioning: bool = False
+    deterministic: Optional[bool] = None
 
     def output_size(self) -> int:
         return self.attention_features
 
+    @overload  # for type checker
+    def __call__(
+            self,
+            xs_pad: Array,
+            ilens: Array,
+            prev_states: Array,
+            deterministic: Optional[bool]) -> Tuple[Array, Array, Array]:
+        ...
+
+    @overload
+    def __call__(
+            self,
+            xs_pad: Array,
+            ilens: Array,
+            *,
+            deterministic: Optional[bool]
+    ) -> Tuple[Array, Array, None]:
+        ...
+
     @nn.compact
     def __call__(
-        self,
-        xs_pad: jax.Array,
-        ilens: jax.Array,
-        deterministic: bool,
-        prev_states: Optional[jax.Array] = None,
-        # ctc: Optional[CTC] = None,
-    ):
+            self,
+            xs_pad: Array,
+            ilens: Array,
+            prev_states: Optional[Array] = None,
+            deterministic: Optional[bool] = None,
+            # ctc: Optional[CTC] = None,
+    ) -> Tuple[Array, Array, Optional[Array]]:
         """Embed positions in tensor.
 
         Args:
@@ -70,6 +92,7 @@ class TransformerEncoder(AbsEncoder):
         Returns:
             position embedded tensor and mask
         """
+        deterministic = merge_param("deterministic", self.deterministic, deterministic)
         idim = xs_pad.shape[-1]
 
         # Apply embed layers
@@ -112,8 +135,8 @@ class TransformerEncoder(AbsEncoder):
 
         # apply encoder layers
         if self.positionwise_layer_type == "linear":
-            positionwise_layer = PositionwiseFeedForward
-            positionwise_layer_args = (
+            positionwise_layer: Type = PositionwiseFeedForward
+            positionwise_layer_args: Tuple = (
                 self.linear_units,
                 self.dropout_rate,
                 nn.relu,

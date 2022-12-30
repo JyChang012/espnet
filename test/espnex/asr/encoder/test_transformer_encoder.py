@@ -17,10 +17,10 @@ def test_transformer_encoder():
     ilens = ilens.at[-1].set(256)
     rng, *rngs = split(rng, 4)
     rngs = dict(zip(["dropout", "params", "skip_layer"], rngs))
-    vars = model.init(rngs, x, ilens, False)
+    vars = model.init(rngs, x, ilens, None, False)
 
     def apply(vars, x, ilens, deterministic, rngs):
-        return model.apply(vars, x, ilens, deterministic, rngs=rngs)
+        return model.apply(vars, x, ilens, None, deterministic, rngs=rngs)
 
     apply = jax.jit(apply, static_argnames="deterministic")
     y, olens, _ = apply(vars, x, ilens, False, rngs)

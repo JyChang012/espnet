@@ -1,4 +1,4 @@
-from typing import Optional, Tuple
+from typing import Optional, Tuple, overload
 
 import jax.numpy as jnp
 from flax.linen import Module
@@ -14,13 +14,13 @@ class Stft(InversibleInterface, Module):
     n_fft: int = 512
     win_length: Optional[int] = None
     hop_length: int = 128
-    window: Optional[str] = "hann"
+    window: str = "hann"
     center: bool = True
     pad_at_end: bool = False  # additional argument for scipy's stft
     normalized: bool = False
     onesided: bool = True
 
-    def extra_repr(self):
+    def extra_repr(self) -> str:
         return (
             f"n_fft={self.n_fft}, "
             f"win_length={self.win_length}, "
@@ -30,10 +30,16 @@ class Stft(InversibleInterface, Module):
             f"onesided={self.onesided}"
         )
 
+    @overload
+    def __call__(self, input: Array) -> Tuple[Array, None]:
+        ...
+
+    @overload
+    def __call__(self, input: Array, ilens: Array) -> Tuple[Array, Array]:
+        ...
+
     def __call__(
-            self,
-            input: Array,
-            ilens: Optional[Array] = None
+        self, input: Array, ilens: Optional[Array] = None
     ) -> Tuple[Array, Optional[Array]]:
         """STFT forward function.
 
@@ -54,13 +60,14 @@ class Stft(InversibleInterface, Module):
             noverlap=noverlap,
             nfft=self.n_fft,
             return_onesided=self.onesided,
-            boundary=None if not self.center else 'zeros',  # does not support 'reflect' used by torch.stft by default
+            boundary=None  # type: ignore
+            if not self.center
+            else "zeros",  # does not support 'reflect' used by torch.stft by default
             padded=self.pad_at_end,
             axis=1,  # Nsamples dimension
         )
-        output: Array
         if self.normalized:
-            output = output * (win_length ** -.5)
+            output = output * (win_length**-0.5)
 
         if output.ndim == 4:
             with_channel = True
@@ -77,10 +84,9 @@ class Stft(InversibleInterface, Module):
 
             mask = make_pad_mask(olens, output.shape[1])  # (bs, frames)
             mask = jnp.expand_dims(
-                mask,
-                [2, 3] if with_channel else 2
+                mask, [2, 3] if with_channel else 2
             )  # (bs, frames, 1)
-            output = jnp.where(mask, 0., output)
+            output = jnp.where(mask, 0.0, output)
         else:
             olens = None
 
@@ -89,8 +95,6 @@ class Stft(InversibleInterface, Module):
         return output, olens
 
     def inverse(
-            self,
-            input: Array,
-            ilens: Array = None
+        self, input: Array, input_lengths: Optional[Array] = None
     ) -> Tuple[Array, Optional[Array]]:
         raise NotImplementedError  # TODO: implement inverse

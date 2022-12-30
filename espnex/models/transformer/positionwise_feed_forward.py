@@ -15,7 +15,7 @@ class PositionwiseFeedForward(Module):
 
     hidden_units: int
     dropout_rate: float
-    activation: Optional[Callable[[Array], Array]] = nn.relu
+    activation: Callable[[Array], Array] = nn.relu
     deterministic: Optional[bool] = None
 
     @nn.compact

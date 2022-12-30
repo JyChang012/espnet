@@ -1,4 +1,4 @@
-from typing import Optional, Sequence, Tuple, Union, Callable
+from typing import Callable, Optional, Sequence, Tuple, TypeVar, Union
 
 import flax.linen as nn
 import jax
@@ -13,17 +13,18 @@ from espnet.nets.pytorch_backend.transformer.subsampling import (
     TooShortUttError,
     check_short_utt,
 )
+from espnex.typing import OptionalArray
 
 from ..transformer.embedding import AddPositionalEncoding
 
 
 def get_output_lengths(
-    lengths: Union[int, Array],
-    kernel_sizes: Union[int, Array],
-    strides: Union[int, Array] = 1,
-    paddings: Union[int, Array] = 0,
-    dilations: Union[int, Array] = 1,
-) -> Union[int, Array]:
+    lengths,
+    kernel_sizes,
+    strides=1,
+    paddings=0,
+    dilations=1,
+):
     return (lengths + 2 * paddings - dilations * (kernel_sizes - 1) - 1) // strides + 1
 
 
@@ -33,11 +34,12 @@ class Conv2dSubsampling(nn.Module):
     kernel_sizes: Sequence[int]
     strides: Sequence[int]
     pos_enc: Optional[Callable[[Array], Array]] = None
+    deterministic: Optional[bool] = None
 
     @nn.compact
     def __call__(
-        self, x: Array, ilens: Optional[Array], deterministic: bool
-    ) -> Union[Tuple[Array, Array], Array]:
+        self, x: Array, ilens: OptionalArray, deterministic: Optional[bool] = None
+    ) -> Tuple[Array, OptionalArray]:
         """Subsample x.
 
         Args:
@@ -49,6 +51,8 @@ class Conv2dSubsampling(nn.Module):
             jax.Array: Subsampled lengths (#batch,),
 
         """
+        deterministic = merge_param("deterministic", self.deterministic, deterministic)
+
         x = jnp.expand_dims(x, -1)  # (b, t, f, c=1)
         for kernel, stride in zip(self.kernel_sizes, self.strides):
             x = Conv(self.odim, [kernel] * 2, stride, padding=0)(x)  # (b, t, f, d)
@@ -63,12 +67,10 @@ class Conv2dSubsampling(nn.Module):
         else:
             x = self.pos_enc(x)
 
-        if ilens is None:
-            return x
-        else:
+        if ilens is not None:
             for kernel, stride in zip(self.kernel_sizes, self.strides):
                 ilens = get_output_lengths(ilens, kernel, stride)
-            return x, ilens
+        return x, ilens
 
 
 defaults_settings = {
@@ -84,9 +86,12 @@ def get_default_conv2d_subsampling(
     subsample_ratio: int,
     dropout_rate: float,
     pos_enc: Optional[Module] = None,
+    deterministic: Optional[bool] = None,
 ) -> Conv2dSubsampling:
     assert (
         subsample_ratio in defaults_settings
     ), f"subsample_ratio must be one of {list(defaults_settings.keys())}!"
     kernels, strides = defaults_settings[subsample_ratio]
-    return Conv2dSubsampling(odim, dropout_rate, kernels, strides, pos_enc)
+    return Conv2dSubsampling(
+        odim, dropout_rate, kernels, strides, pos_enc, deterministic
+    )
