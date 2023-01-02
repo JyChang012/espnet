@@ -67,7 +67,7 @@ class AddPositionalEncoding(Module):
     deterministic: Optional[bool] = None
 
     @nn.compact
-    def __call__(self, x: Array, deterministic: Optional[bool] = None) -> Array:
+    def __call__(self, x: Array, x_positions: Optional[Array] = None, deterministic: Optional[bool] = None) -> Array:
         """Add positional encoding. Dynamically increase T of positional encoding. Might have performance issue when using with JIT
 
         Args:
@@ -84,6 +84,9 @@ class AddPositionalEncoding(Module):
             pos_emb_shape
         )
         x_scale = np.sqrt(x.shape[-1])
-        x = x * x_scale + pos_emb[:, :length, :]
+        pos_emb = pos_emb[:, :length, :]
+        if x_positions is not None:
+            pos_emb = jnp.take(pos_emb[0], x_positions, axis=0)
+        x = x * x_scale + pos_emb
         x = Dropout(self.dropout_rate)(x, deterministic)
         return x

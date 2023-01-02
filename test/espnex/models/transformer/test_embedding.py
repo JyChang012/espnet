@@ -28,7 +28,7 @@ def test_embedding(b, t, d, lens, deterministic, jit, init_type):
     rngs = {"dropout": PRNGKey(0)}
 
     def apply(x, rngs):
-        return model.apply({}, x, deterministic, rngs=rngs)
+        return model.apply({}, x, deterministic=deterministic, rngs=rngs)
 
     if jit:
         apply = jax.jit(apply)

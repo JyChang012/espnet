@@ -62,7 +62,7 @@ class Conv2dSubsampling(nn.Module):
         x = Dense(self.odim)(x)
         if self.pos_enc is None:
             x = AddPositionalEncoding(self.dropout_rate, init_type="espnet")(
-                x, deterministic
+                x, deterministic=deterministic
             )
         else:
             x = self.pos_enc(x)
