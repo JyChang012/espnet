@@ -37,8 +37,6 @@ def test_stft():
     ty = torch.linalg.norm(ty, dim=-1)
 
     # assert_allclose(jax.device_get(y), ty.numpy(), rtol=.01, atol=.1)
-    # diff is caused by the default `reflect` padding of torch.stft, jax do not have this options and I do not see the
-    # reason using reflect padding
     pass
 
 

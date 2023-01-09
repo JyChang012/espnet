@@ -62,7 +62,7 @@ class Stft(InversibleInterface, Module):
             return_onesided=self.onesided,
             boundary=None  # type: ignore
             if not self.center
-            else "zeros",  # does not support 'reflect' used by torch.stft by default
+            else "even",  # does not support 'reflect' used by torch.stft by default
             padded=self.pad_at_end,
             axis=1,  # Nsamples dimension
         )
