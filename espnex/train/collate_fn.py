@@ -1,7 +1,5 @@
 from typing import Collection, Dict, List, Tuple, Union
 
-import jax
-import jax.numpy as jnp
 import numpy as np
 import torch
 from typeguard import check_argument_types, check_return_type
@@ -15,7 +13,7 @@ class CommonCollateFn(TorchCollateFn):
 
     def __call__(
         self, data: Collection[Tuple[str, Dict[str, np.ndarray]]]
-    ) -> Tuple[List[str], Dict[str, jax.Array]]:
+    ) -> Tuple[List[str], Dict[str, np.ndarray]]:
         return common_collate_fn(
             data,
             float_pad_value=self.float_pad_value,
@@ -29,7 +27,7 @@ def common_collate_fn(
     float_pad_value: Union[float, int] = 0.0,
     int_pad_value: int = -32768,
     not_sequence: Collection[str] = (),
-) -> Tuple[List[str], Dict[str, jax.Array]]:
+) -> Tuple[List[str], Dict[str, np.ndarray]]:
     """Concatenate ndarray-list to an array and convert to JAX Array.
 
     Examples:
@@ -73,12 +71,12 @@ def common_collate_fn(
         # tensor_list: Batch x (Length, ...)
         tensor_list = [torch.from_numpy(a) for a in array_list]
         # tensor: (Batch, Length, ...)
-        jarray = jnp.array(pad_list(tensor_list, pad_value))
-        array_dict[key] = jarray
+        array = pad_list(tensor_list, pad_value).numpy()
+        array_dict[key] = array
 
         # lens: (Batch,)
         if key not in not_sequence:
-            lens = jnp.array([d[key].shape[0] for d in data_list], dtype=int)
+            lens = np.array([d[key].shape[0] for d in data_list], dtype=int)
             array_dict[key + "_lengths"] = lens
 
     out = (uttids, array_dict)
