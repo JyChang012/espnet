@@ -7,11 +7,7 @@ from jax import Array
 
 
 class AbsEncoder(nn.Module, ABC):
-    deterministic: Optional[bool] = None
-
-    @abstractmethod
-    def output_size(self) -> int:
-        raise NotImplementedError
+    output_size: int
 
     @overload  # for type checker
     def __call__(
@@ -19,7 +15,7 @@ class AbsEncoder(nn.Module, ABC):
             xs_pad: Array,
             ilens: Array,
             prev_states: Array,
-            deterministic: Optional[bool]) -> Tuple[Array, Array, Array]:
+            deterministic: bool) -> Tuple[Array, Array, Array]:
         ...
 
     @overload
@@ -28,7 +24,7 @@ class AbsEncoder(nn.Module, ABC):
             xs_pad: Array,
             ilens: Array,
             *,
-            deterministic: Optional[bool]
+            deterministic: bool
     ) -> Tuple[Array, Array, None]:
         ...
 
@@ -38,6 +34,6 @@ class AbsEncoder(nn.Module, ABC):
         xs_pad: Array,
         ilens: Array,
         prev_states: Optional[Array] = None,
-        deterministic: Optional[bool] = None,
+        deterministic: bool = True
     ) -> Tuple[Array, Array, Optional[Array]]:
         raise NotImplementedError

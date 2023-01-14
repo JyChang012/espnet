@@ -31,7 +31,7 @@ from espnex.typing import OptionalArray
 
 
 class TransformerEncoder(AbsEncoder):
-    attention_features: int = 256
+    output_size: int = 256  # inherit from superclass
     attention_heads: int = 4
     linear_units: int = 2048
     num_blocks: int = 6
@@ -51,9 +51,6 @@ class TransformerEncoder(AbsEncoder):
     interctc_layer_idx: Optional[List[int]] = None  # currently ignore interctc
     interctc_use_conditioning: bool = False
     deterministic: Optional[bool] = None
-
-    def output_size(self) -> int:
-        return self.attention_features
 
     @overload  # for type checker
     def __call__(
@@ -104,7 +101,7 @@ class TransformerEncoder(AbsEncoder):
         if self.input_layer == "linear":
             xs_pad = Sequential(
                 [
-                    Dense(self.attention_features),
+                    Dense(self.output_size),
                     LayerNorm(),
                     Dropout(self.dropout_rate, deterministic=deterministic),
                     relu,
@@ -118,7 +115,7 @@ class TransformerEncoder(AbsEncoder):
             else:
                 ratio = int(self.input_layer[-1])
             xs_pad, ilens = get_default_conv2d_subsampling(
-                self.attention_features, ratio, self.dropout_rate
+                self.output_size, ratio, self.dropout_rate
             )(xs_pad, ilens, deterministic=deterministic)
         elif self.input_layer == "embed":
             assert isinstance(
@@ -126,12 +123,12 @@ class TransformerEncoder(AbsEncoder):
             ), "Invalid num_embeddings or num_embeddings not given as argument."
             xs_pad = Sequential(
                 [
-                    Embed(self.num_embeddings, self.attention_features, dtype=float),
+                    Embed(self.num_embeddings, self.output_size, dtype=float),
                     pos_enc_layer,
                 ]
             )(xs_pad)
-        elif self.input_layer is None and idim != self.attention_features:
-            xs_pad = Dense(self.attention_features)(xs_pad)
+        elif self.input_layer is None and idim != self.output_size:
+            xs_pad = Dense(self.output_size)(xs_pad)
 
         # apply encoder layers
         if self.positionwise_layer_type == "linear":
