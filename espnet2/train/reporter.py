@@ -200,7 +200,7 @@ class SubReporter:
         if self.count == 0 or start == end:
             return ""
 
-        message = f"{self.epoch}epoch:{self.key}:" f"{start + 1}-{end}batch: "
+        message = f"{self.epoch} epoch:{self.key}:" f"{start + 1}-{end}batch: "
 
         for idx, (key2, stats_list) in enumerate(self.stats.items()):
             assert len(stats_list) == self.count, (len(stats_list), self.count)
