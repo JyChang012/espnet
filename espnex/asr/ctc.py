@@ -54,8 +54,8 @@ def ctc_decode(
             )
 
     state = CTCDecodeState(
-        jnp.full_like(x, padding_id, dtype=int),
-        jnp.zeros((batch_size,), dtype=int),
+        jnp.full_like(x, padding_id, dtype=x_lengths.dtype),
+        jnp.zeros(batch_size, dtype=x_lengths.dtype),
     )
     state = lax.while_loop(cond_fn, update_state, state)
     return state.output, state.output_positions

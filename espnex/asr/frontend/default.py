@@ -85,7 +85,7 @@ class DefaultFrontend(AbsFrontend):
                 input_stft = input_stft[:, :, 0]
 
         # 4. STFT -> Power spectrum
-        # h: ComplexTensor(B, T, F) -> torch.Tensor(B, T, F)
+        # h: ComplexTensor(B, T, F) -> Tensor(B, T, F)
         input_power = input_stft.real**2 + input_stft.imag**2
 
         # 5. Feature transform e.g. Stft -> Log-Mel-Fbank

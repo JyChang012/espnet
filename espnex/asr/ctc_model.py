@@ -1,17 +1,22 @@
-from typing import Sequence, Optional, Any, Tuple, Dict
+from typing import Sequence, Optional, Any, Tuple, Dict, Callable, Union, List
 import logging
 
 import flax.linen as nn
+import numpy as np
 from flax.linen import Module, Dense
-from jax import Array
+from jax import Array, device_get
 from flax.struct import PyTreeNode
 from optax import ctc_loss
 import jax.numpy as jnp
+from numpy import ndarray
+import jax
 
 from espnex.asr.encoder.abc import AbsEncoder
 from espnex.asr.frontend.abc import AbsFrontend
 from espnex.train.abs_espnex_model import AbsESPnetModel
 from espnex.models.utils import make_pad_mask
+from espnet.nets.e2e_asr_common import ErrorCalculator
+from espnex.asr.ctc import ctc_decode
 
 
 class CTCASRModel(AbsESPnetModel):
@@ -23,6 +28,7 @@ class CTCASRModel(AbsESPnetModel):
     length_normalized_loss: bool = False
     report_cer: bool = True
     report_wer: bool = True
+    blank_id: int = 0
     sym_space: str = "<space>"
     sym_blank: str = "<blank>"
     # In a regular ESPnet recipe, <sos> and <eos> are both "<sos/eos>
@@ -44,16 +50,26 @@ class CTCASRModel(AbsESPnetModel):
             training: bool,
             *args: Any,
             **kwargs: Any,
-    ) -> Tuple[Array, int, Any]:
+    ) -> Tuple[Array, Dict[str, Any], float, Tuple[Array, Array, Array, Array]]:
         enc_out, enc_out_lengths = self.encode(speech, speech_lengths, training)
         enc_out = self.out_dense(enc_out)
         enc_padded_mask = make_pad_mask(enc_out_lengths, enc_out.shape[1])
+        self.sow('intermediates', 'enc_out', enc_out)
+        self.sow('intermediates', 'enc_out_len', enc_out_lengths)
+        self.sow('intermediates', 'text', text)
+        self.sow('intermediates', 'text_len', text_lengths)
         # enc_padded_mask = enc_padded_mask.astype('float')
         text_padded_mask = make_pad_mask(text_lengths, text.shape[1])
         losses = ctc_loss(enc_out, enc_padded_mask, text, text_padded_mask)  # (bs,)
         loss = jnp.mean(losses)
         batch_size = speech.shape[0]
-        return loss, batch_size, (enc_out, enc_out_lengths)
+
+        arg_max_enc_out = jnp.argmax(enc_out, axis=-1)
+        decoded, decoded_length = ctc_decode(arg_max_enc_out, enc_out_lengths, self.blank_id, self.ignore_id)
+        self.sow('intermediates', 'decoded', decoded)
+        self.sow('intermediates', 'decoded_len', decoded_length)
+        self.sow('intermediates', 'enc_out_argmax', arg_max_enc_out)
+        return loss, {'loss': loss}, batch_size, (decoded, decoded_length, text, text_lengths)
 
     def _extract_feats(
             self,
@@ -97,3 +113,42 @@ class CTCASRModel(AbsESPnetModel):
         feats, feats_lengths = self._extract_feats(speech, speech_lengths, training)
         enc_out, enc_out_lengths, _ = self.encoder(feats, feats_lengths, deterministic=not training)
         return enc_out, enc_out_lengths
+
+    def build_evaluator(
+            self,
+            token_list: Union[Tuple[str, ...], List[str]]
+    ) -> Callable[[float, Dict[str, Any], float, Any], Dict[str, Any]]:
+        # error_calculator use -1 as padding idx
+        error_calculator = ErrorCalculator(
+            token_list.copy(), self.sym_space, self.sym_blank, self.report_cer, self.report_wer
+        )
+        def evaluate(
+                loss: float,
+                stats: Dict[str, Any],
+                weight: float,
+                aux: Tuple[ndarray, ndarray, ndarray, ndarray]
+        ) -> Dict[str, Any]:
+
+            decoded, decoded_length, text, text_lengths = aux
+
+            decoded = decoded[:, :np.max(decoded_length)]
+            text = text[:, :np.max(text_lengths)]
+
+            decoded_str, text_str = error_calculator.convert_to_char(decoded, text)
+
+            cer = error_calculator.calculate_cer(decoded_str, text_str)
+            wer = error_calculator.calculate_wer(decoded_str, text_str)
+            stats.update(dict(
+                wer=wer,
+                cer=cer,
+            ))
+            return stats
+        return evaluate
+
+
+
+
+
+
+
+

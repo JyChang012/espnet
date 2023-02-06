@@ -7,7 +7,7 @@ from jax import Array
 def make_pad_mask(  # a simplified version of the torch one, to support JIT compilation.
     lengths: Array, maxlen: int, axis: int = -1
 ) -> Array:
-    """Make mask tensor containing indices of padded part.
+    """Make mask tensor containing indices of padded part. Padded part is 1, others are zero.
 
     Args:
         lengths (LongTensor or List): Batches of lengths (*B,).

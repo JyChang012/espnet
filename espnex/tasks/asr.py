@@ -1,7 +1,6 @@
 import argparse
 import logging
-from typing import Callable, Collection, Dict, List, Optional, Tuple
-
+from typing import Callable, Collection, Dict, List, Optional, Tuple, Any
 
 import jax
 import jax.numpy as jnp
@@ -73,7 +72,7 @@ class ASRTask(AbsTask):
     ]
 
     # If you need to modify train() or eval() procedures, change Trainer class here
-    trainer = None
+    # trainer = Trainer
 
     @classmethod
     def add_task_arguments(cls, parser: argparse.ArgumentParser):
@@ -296,7 +295,9 @@ class ASRTask(AbsTask):
         return retval
 
     @classmethod
-    def build_model(cls, args: argparse.Namespace) -> Tuple[AbsESPnetModel, FrozenDict]:
+    def build_model(
+            cls, args: argparse.Namespace
+    ) -> Tuple[AbsESPnetModel, FrozenDict, str, Callable[..., Dict[str, Any]]]:
         assert check_argument_types()
 
         if isinstance(args.token_list, str):
@@ -364,16 +365,16 @@ class ASRTask(AbsTask):
 
         # generate fake data to init parameters
         speech = jnp.ones([1, 2048], dtype='float')
-        speech_lengths = jnp.full([1], 2048)
+        speech_lengths = jnp.array([2048])
         text = jnp.ones([1, 128], dtype='int')
-        text_lengths = jnp.full([1], 128)
+        text_lengths = jnp.array([128])
         rng = args.seed  # FIXME(Jiayu): manage seed used in different place!
         rng = jax.random.PRNGKey(rng)
         rng = jax.random.split(rng, 3)
         rng = dict(zip(["skip_layer", "dropout", "params"], rng))
         # TODO: currently hardcode names of required RNG names, might need modifications later
         variables = model.init(rng, speech, speech_lengths, text, text_lengths, False)
+        tabular_repr = model.tabulate(rng, speech, speech_lengths, text, text_lengths, False)
+        evaluator = model.build_evaluator(token_list)
 
-        ret = model, variables
-        assert check_return_type(ret)
-        return ret
+        return model, variables, tabular_repr, evaluator

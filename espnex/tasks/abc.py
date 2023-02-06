@@ -1,4 +1,5 @@
 import logging
+import os
 import sys
 from abc import abstractmethod, ABC
 import argparse
@@ -6,12 +7,25 @@ from pathlib import Path
 from typing import List, Tuple, Optional, Callable, Dict, Sequence, Any, Union
 
 import humanfriendly
+import jax.random
 import numpy as np
+import torch
 from flax.core import FrozenDict
 from typeguard import check_argument_types
 from torch.utils.data import DataLoader
-from jax import Array
+from jax import Array, random, device_get
+from optax import adam, adamw, sgd, adagrad, adamax, rmsprop, radam, lamb, yogi, GradientTransformation, \
+    constant_schedule
+from flax.training.train_state import TrainState
+import flax.training.checkpoints as checkpoints
 
+from espnet2.iterators.abs_iter_factory import AbsIterFactory
+from espnet2.iterators.chunk_iter_factory import ChunkIterFactory
+from espnet2.iterators.sequence_iter_factory import SequenceIterFactory
+from espnet2.samplers.unsorted_batch_sampler import UnsortedBatchSampler
+from espnet2.tasks.abs_task import IteratorOptions
+from espnet2.torch_utils.set_all_random_seed import set_all_random_seed
+from espnet2.train.distributed_utils import DistributedOption
 from espnet2.train.iterable_dataset import IterableESPnetDataset
 from espnet import __version__
 from espnet2.samplers.build_batch_sampler import BATCH_TYPES, build_batch_sampler
@@ -33,11 +47,35 @@ from espnet2.utils.yaml_no_alias_safe_dump import yaml_no_alias_safe_dump
 from espnet.utils.cli_utils import get_commandline_args
 from espnex.main_funcs import collect_stats
 from espnex.train.abs_espnex_model import AbsESPnetModel
+from espnex.schedulers import warmup_schedule
+from espnex.train.trainer import Trainer, ESPNetTrainState
+
+optim_classes = dict(
+    adam=adam,
+    adamw=adamw,
+    sgd=sgd,
+    # TODO: add adadelta, etc
+    adagrad=adagrad,
+    adamax=adamax,
+    rmsprop=rmsprop,
+    radam=radam,
+    lamb=lamb,
+    yogi=yogi
+)
+
+scheduler_classes = dict(
+    constant=constant_schedule,
+    warmuplr=warmup_schedule
+)
+
+# To lower keys
+optim_classes = {k.lower(): v for k, v in optim_classes.items()}
+scheduler_classes = {k.lower(): v for k, v in scheduler_classes.items()}
 
 
 class AbsTask(ABC):
     num_optimizers: int = 1
-    trainer = None  # TODO: implement trainer
+    trainer = Trainer
     class_choices_list: List[ClassChoices] = []
 
     def __init__(self):
@@ -113,7 +151,10 @@ class AbsTask(ABC):
 
     @classmethod
     @abstractmethod
-    def build_model(cls, args: argparse.Namespace) -> Tuple[AbsESPnetModel, FrozenDict]:
+    def build_model(
+            cls, args: argparse.Namespace
+    ) -> Tuple[AbsESPnetModel, FrozenDict, str, Callable[..., Dict[str, Any]]]:
+        """Build model, init variables and generate model tabular representation."""
         raise NotImplementedError
 
     @classmethod
@@ -533,7 +574,6 @@ class AbsTask(ABC):
         group.add_argument("--train_shape_file", type=str, action="append", default=[])
         group.add_argument("--valid_shape_file", type=str, action="append", default=[])
 
-
         group = parser.add_argument_group("Sequence iterator related")
         _batch_type_help = ""
         for key, value in BATCH_TYPES.items():
@@ -658,36 +698,33 @@ class AbsTask(ABC):
                  "If None, the 5 percent size of --max_cache_size",
         )
 
-
-
         group = parser.add_argument_group("Optimizer related")
         for i in range(1, cls.num_optimizers + 1):
             suf = "" if i == 1 else str(i)
 
-            '''
             group.add_argument(
                 f"--optim{suf}",
                 type=lambda x: x.lower(),
-                default="adadelta",
+                default="warmuplr",
                 choices=list(optim_classes),
                 help="The optimizer type",
             )
-            '''
+
             group.add_argument(
                 f"--optim{suf}_conf",
                 action=NestedDictAction,
                 default=dict(),
                 help="The keyword arguments for optimizer",
             )
-            '''
+
             group.add_argument(
                 f"--scheduler{suf}",
-                type=lambda x: str_or_none(x.lower()),
-                default=None,
-                choices=list(scheduler_classes) + [None],
+                type=lambda x: x.lower(),
+                default='constant',
+                choices=list(scheduler_classes),
                 help="The lr scheduler type",
             )
-            '''
+
             group.add_argument(
                 f"--scheduler{suf}_conf",
                 action=NestedDictAction,
@@ -702,9 +739,85 @@ class AbsTask(ABC):
         return parser
 
     @classmethod
+    def build_optimizers(
+            cls,
+            args: argparse.Namespace,
+    ) -> List[GradientTransformation]:
+        """Build optimizers and schedulers."""
+        if cls.num_optimizers != 1:
+            raise RuntimeError(
+                "build_optimizers() must be overridden if num_optimizers != 1"
+            )
+
+        # 0. build scheduler
+        scheduler_class = scheduler_classes.get(args.scheduler)
+        assert scheduler_class is not None, f"must be one of {list(scheduler_classes)}: {args.scheduler}"
+        schedule = scheduler_class(**args.scheduler_conf)
+
+        # 1. build optimizer
+        optim_class = optim_classes.get(args.optim)
+        assert optim_class is not None, f"must be one of {list(optim_classes)}: {args.optim}"
+        # TODO: Add DDP support and exclude_weight_decay
+        tx = optim_class(learning_rate=schedule, **args.optim_conf)
+        txs = [tx]
+        return txs
+
+    @classmethod
     def exclude_opts(cls) -> Tuple[str, ...]:
         """The options not to be shown by --print_config"""
         return "required", "print_config", "config", "ngpu"
+
+    @classmethod
+    def get_default_config(cls) -> Dict[str, Any]:
+        """Return the configuration as dict.
+
+        This method is used by print_config()
+        """
+
+        def get_class_type(name: str, classes: dict):
+            _cls = classes.get(name)
+            if _cls is None:
+                raise ValueError(f"must be one of {list(classes)}: {name}")
+            return _cls
+
+        # This method is used only for --print_config
+        assert check_argument_types()
+        parser = cls.get_parser()
+        args, _ = parser.parse_known_args()
+        config = vars(args)
+        # Excludes the options not to be shown
+        for k in AbsTask.exclude_opts():
+            config.pop(k)
+
+        for i in range(1, cls.num_optimizers + 1):
+            suf = "" if i == 1 else str(i)
+            name = config[f"optim{suf}"]
+            optim_class = get_class_type(name, optim_classes)
+            conf = get_default_kwargs(optim_class)
+            # Overwrite the default by the arguments,
+            conf.update(config[f"optim{suf}_conf"])
+            # and set it again
+            config[f"optim{suf}_conf"] = conf
+
+            name = config[f"scheduler{suf}"]
+            if name is not None:
+                scheduler_class = get_class_type(name, scheduler_classes)
+                conf = get_default_kwargs(scheduler_class)
+                # Overwrite the default by the arguments,
+                conf.update(config[f"scheduler{suf}_conf"])
+                # and set it again
+                config[f"scheduler{suf}_conf"] = conf
+
+        for class_choices in cls.class_choices_list:
+            if getattr(args, class_choices.name) is not None:
+                class_obj = class_choices.get_class(getattr(args, class_choices.name))
+                conf = get_default_kwargs(class_obj)
+                name = class_choices.name
+                # Overwrite the default by the arguments,
+                conf.update(config[f"{name}_conf"])
+                # and set it again
+                config[f"{name}_conf"] = conf
+        return config
 
     @classmethod
     def check_required_command_args(cls, args: argparse.Namespace):
@@ -715,7 +828,7 @@ class AbsTask(ABC):
 
         required = ", ".join(
             f"--{a}" for a in args.required if getattr(args, a) is None
-        )
+        )  # `args.required` is defined by `parser.set_defaults` in `get_parser`
 
         if len(required) != 0:
             parser = cls.get_parser()
@@ -763,56 +876,22 @@ class AbsTask(ABC):
                     )
 
     @classmethod
-    def build_streaming_iterator(
-            cls,
-            data_path_and_name_and_type,
-            preprocess_fn,
-            collate_fn,
-            key_file: str = None,
-            batch_size: int = 1,
-            dtype: str = np.float32,
-            num_workers: int = 1,
-            allow_variable_data_keys: bool = False,
-            ngpu: int = 0,
-            inference: bool = False,
-    ) -> DataLoader:
-        """Build DataLoader using iterable dataset"""
+    def print_config(cls, file=sys.stdout) -> None:
         assert check_argument_types()
-        # For backward compatibility for pytorch DataLoader
-        if collate_fn is not None:
-            kwargs = dict(collate_fn=collate_fn)
-        else:
-            kwargs = {}
-
-        dataset = IterableESPnetDataset(
-            data_path_and_name_and_type,
-            float_dtype=dtype,
-            preprocess=preprocess_fn,
-            key_file=key_file,
-        )
-        if dataset.apply_utt2category:
-            kwargs.update(batch_size=1)
-        else:
-            kwargs.update(batch_size=batch_size)
-
-        cls.check_task_requirements(
-            dataset, allow_variable_data_keys, train=False, inference=inference
-        )
-
-        return DataLoader(
-            dataset=dataset,
-            pin_memory=ngpu > 0,
-            num_workers=num_workers,
-            **kwargs,
-        )
+        # Shows the config: e.g. python train.py asr --print_config
+        config = cls.get_default_config()
+        file.write(yaml_no_alias_safe_dump(config, indent=4, sort_keys=False))
 
     @classmethod
     def main(cls, args: argparse.Namespace = None, cmd: Sequence[str] = None):
         print(get_commandline_args(), file=sys.stderr)
         if args is None:
             parser = cls.get_parser()
-            args = parser.parse_args(cmd)
+            args, *_ = parser.parse_known_args(cmd)  # TODO: only parse known args for debugging
         args.version = __version__
+        if args.print_config:
+            cls.print_config()
+            sys.exit(0)
 
         cls.check_required_command_args(args)
         cls.main_worker(args)
@@ -821,11 +900,46 @@ class AbsTask(ABC):
     def main_worker(cls, args: argparse.Namespace):
         assert check_argument_types()
 
-        model, variables = cls.build_model(args=args)
+        # 0. Set up logger
+        _rank = 0  # TODO: distributed is not supported currently, rank is always 0
+        logging.basicConfig(
+            level=args.log_level,
+            format=f"[{os.uname()[1].split('.')[0]}{_rank}]"
+                   f" %(asctime)s (%(module)s:%(lineno)d) %(levelname)s: %(message)s",
+        )
+
+        # 1. set random seed
+        set_all_random_seed(args.seed)  # TODO: is using the same seed for torch / JAX / numpy a good idea?
+        jax_key = random.PRNGKey(args.seed)
+        # torch.backends.cudnn.enabled = args.cudnn_enabled
+        # torch.backends.cudnn.benchmark = args.cudnn_benchmark
+        # torch.backends.cudnn.deterministic = args.cudnn_deterministic
+        # TODO: JAX has a similar option to use deterministic cudnn operations
+
+        # TODO: add cmd flags for verbosity level and diagnostic mode
+
+        # 2. Build model
+        model, variables, tabular_repr, evaluator = cls.build_model(args=args)
         assert isinstance(model, AbsESPnetModel), f"model must inherit {AbsESPnetModel.__name__}, but got {type(model)}"
+        # Note (Jiayu): all JAX operations are executed by the default device
+        # which is accelerator (like TPU, GPU) if present
 
-        # TODO: skip build optimizers and schedulers
+        # TODO: set frozen params
 
+        # 3. Build optimizer and scheduler
+        optimizers = cls.build_optimizers(args)
+
+        # 4. TODO: log model summary and libraries version
+        logging.info('Model structure:\n' + tabular_repr)
+
+        # TODO: log schedulers
+        idx: Any
+        for idx, o in enumerate(optimizers, 1):
+            if idx == 1:
+                idx = ''
+            logging.info(f"Optimizer{idx}:\n{o}")
+
+        # 5. Dump "args" to config.yaml
         output_dir = Path(args.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         with (output_dir / "config.yaml").open("w", encoding="utf-8") as f:
@@ -880,10 +994,489 @@ class AbsTask(ABC):
                 log_interval=args.log_interval,
                 write_collected_feats=args.write_collected_feats,
             )
+        else:
+            # 6. Load pre-trained model
+            # TODO: add support for transfer learning
+            params = variables['params']
 
+            # 7. Build iterator factories
+            # TODO: Add iter factory for distributed options, currently use the `distributed_option` for torch backend
+            #  as a dummy
+            distributed_option = DistributedOption()
+            train_iter_factory = cls.build_iter_factory(
+                args=args,
+                distributed_option=distributed_option,
+                mode="train",
+            )
+            valid_iter_factory = cls.build_iter_factory(
+                args=args,
+                distributed_option=distributed_option,
+                mode="valid",
+            )
 
+            # TODO: ignore attention plot and matplotlib
+            args.num_att_plot = 0
+            plot_attention_iter_factory = None
 
+            # 8. create TrainState
+            jax_key, key = random.split(jax_key)
+            state = ESPNetTrainState.create(
+                apply_fn=model.apply,
+                params=params,
+                tx=optimizers[0],
+            )  # TODO: pass key names as arguments instead of hardcoding
 
+            # 9. Start training
+            # TODO: support wandb
+            trainer_options = cls.trainer.build_options(args)
+            cls.trainer.run(
+                state,
+                train_iter_factory,
+                valid_iter_factory,
+                jax_key,
+                evaluator,
+                plot_attention_iter_factory,
+                trainer_options,
+                distributed_option
+            )
 
+            # TODO: finish wandb session
 
+    @classmethod
+    def build_iter_options(
+            cls,
+            args: argparse.Namespace,
+            distributed_option: DistributedOption,
+            mode: str,
+    ):
+        if mode == "train":
+            preprocess_fn = cls.build_preprocess_fn(args, train=True)
+            collate_fn = cls.build_collate_fn(args, train=True)
+            data_path_and_name_and_type = args.train_data_path_and_name_and_type
+            shape_files = args.train_shape_file
+            batch_size = args.batch_size
+            batch_bins = args.batch_bins
+            batch_type = args.batch_type
+            max_cache_size = args.max_cache_size
+            max_cache_fd = args.max_cache_fd
+            distributed = distributed_option.distributed
+            num_batches = None
+            num_iters_per_epoch = args.num_iters_per_epoch
+            train = True
 
+        elif mode == "valid":
+            preprocess_fn = cls.build_preprocess_fn(args, train=False)
+            collate_fn = cls.build_collate_fn(args, train=False)
+            data_path_and_name_and_type = args.valid_data_path_and_name_and_type
+            shape_files = args.valid_shape_file
+
+            if args.valid_batch_type is None:
+                batch_type = args.batch_type
+            else:
+                batch_type = args.valid_batch_type
+            if args.valid_batch_size is None:
+                batch_size = args.batch_size
+            else:
+                batch_size = args.valid_batch_size
+            if args.valid_batch_bins is None:
+                batch_bins = args.batch_bins
+            else:
+                batch_bins = args.valid_batch_bins
+            if args.valid_max_cache_size is None:
+                # Cache 5% of maximum size for validation loader
+                max_cache_size = 0.05 * args.max_cache_size
+            else:
+                max_cache_size = args.valid_max_cache_size
+            max_cache_fd = args.max_cache_fd
+            distributed = distributed_option.distributed
+            num_batches = None
+            num_iters_per_epoch = None
+            train = False
+
+        elif mode == "plot_att":
+            preprocess_fn = cls.build_preprocess_fn(args, train=False)
+            collate_fn = cls.build_collate_fn(args, train=False)
+            data_path_and_name_and_type = args.valid_data_path_and_name_and_type
+            shape_files = args.valid_shape_file
+            batch_type = "unsorted"
+            batch_size = 1
+            batch_bins = 0
+            num_batches = args.num_att_plot
+            max_cache_fd = args.max_cache_fd
+            # num_att_plot should be a few sample ~ 3, so cache all data.
+            max_cache_size = np.inf if args.max_cache_size != 0.0 else 0.0
+            # always False because plot_attention performs on RANK0
+            distributed = False
+            num_iters_per_epoch = None
+            train = False
+        else:
+            raise NotImplementedError(f"mode={mode}")
+
+        return IteratorOptions(
+            preprocess_fn=preprocess_fn,
+            collate_fn=collate_fn,
+            data_path_and_name_and_type=data_path_and_name_and_type,
+            shape_files=shape_files,
+            batch_type=batch_type,
+            batch_size=batch_size,
+            batch_bins=batch_bins,
+            num_batches=num_batches,
+            max_cache_size=max_cache_size,
+            max_cache_fd=max_cache_fd,
+            distributed=distributed,
+            num_iters_per_epoch=num_iters_per_epoch,
+            train=train,
+        )
+
+    @classmethod
+    def build_iter_factory(
+            cls,
+            args: argparse.Namespace,
+            distributed_option: DistributedOption,
+            mode: str,
+            kwargs: dict = None,
+    ) -> AbsIterFactory:
+        """Build a factory object of mini-batch iterator.
+
+        This object is invoked at every epochs to build the iterator for each epoch
+        as following:
+
+        >>> iter_factory = cls.build_iter_factory(...)
+        >>> for epoch in range(1, max_epoch):
+        ...     for keys, batch in iter_fatory.build_iter(epoch):
+        ...         model(**batch)
+
+        The mini-batches for each epochs are fully controlled by this class.
+        Note that the random seed used for shuffling is decided as "seed + epoch" and
+        the generated mini-batches can be reproduces when resuming.
+
+        Note that the definition of "epoch" doesn't always indicate
+        to run out of the whole training corpus.
+        "--num_iters_per_epoch" option restricts the number of iterations for each epoch
+        and the rest of samples for the originally epoch are left for the next epoch.
+        e.g. If The number of mini-batches equals to 4, the following two are same:
+
+        - 1 epoch without "--num_iters_per_epoch"
+        - 4 epoch with "--num_iters_per_epoch" == 4
+
+        """
+        assert check_argument_types()
+        iter_options = cls.build_iter_options(args, distributed_option, mode)
+
+        # Overwrite iter_options if any kwargs is given
+        if kwargs is not None:
+            for k, v in kwargs.items():
+                setattr(iter_options, k, v)
+
+        if args.iterator_type == "sequence":
+            return cls.build_sequence_iter_factory(
+                args=args,
+                iter_options=iter_options,
+                mode=mode,
+            )
+        elif args.iterator_type == "chunk":
+            return cls.build_chunk_iter_factory(
+                args=args,
+                iter_options=iter_options,
+                mode=mode,
+            )
+        elif args.iterator_type == "task":
+            return cls.build_task_iter_factory(
+                args=args,
+                iter_options=iter_options,
+                mode=mode,
+            )
+        else:
+            raise RuntimeError(f"Not supported: iterator_type={args.iterator_type}")
+
+    @classmethod
+    def build_iter_factory(
+            cls,
+            args: argparse.Namespace,
+            distributed_option: DistributedOption,
+            mode: str,
+            kwargs: dict = None,
+    ) -> AbsIterFactory:
+        """Build a factory object of mini-batch iterator.
+
+        This object is invoked at every epochs to build the iterator for each epoch
+        as following:
+
+        >>> iter_factory = cls.build_iter_factory(...)
+        >>> for epoch in range(1, max_epoch):
+        ...     for keys, batch in iter_fatory.build_iter(epoch):
+        ...         model(**batch)
+
+        The mini-batches for each epochs are fully controlled by this class.
+        Note that the random seed used for shuffling is decided as "seed + epoch" and
+        the generated mini-batches can be reproduces when resuming.
+
+        Note that the definition of "epoch" doesn't always indicate
+        to run out of the whole training corpus.
+        "--num_iters_per_epoch" option restricts the number of iterations for each epoch
+        and the rest of samples for the originally epoch are left for the next epoch.
+        e.g. If The number of mini-batches equals to 4, the following two are same:
+
+        - 1 epoch without "--num_iters_per_epoch"
+        - 4 epoch with "--num_iters_per_epoch" == 4
+
+        """
+        assert check_argument_types()
+        iter_options = cls.build_iter_options(args, distributed_option, mode)
+
+        # Overwrite iter_options if any kwargs is given
+        if kwargs is not None:
+            for k, v in kwargs.items():
+                setattr(iter_options, k, v)
+
+        if args.iterator_type == "sequence":
+            return cls.build_sequence_iter_factory(
+                args=args,
+                iter_options=iter_options,
+                mode=mode,
+            )
+        elif args.iterator_type == "chunk":
+            return cls.build_chunk_iter_factory(
+                args=args,
+                iter_options=iter_options,
+                mode=mode,
+            )
+        elif args.iterator_type == "task":
+            return cls.build_task_iter_factory(
+                args=args,
+                iter_options=iter_options,
+                mode=mode,
+            )
+        else:
+            raise RuntimeError(f"Not supported: iterator_type={args.iterator_type}")
+
+    @classmethod
+    def build_sequence_iter_factory(
+            cls, args: argparse.Namespace, iter_options: IteratorOptions, mode: str
+    ) -> AbsIterFactory:
+        assert check_argument_types()
+
+        dataset = ESPnetDataset(
+            iter_options.data_path_and_name_and_type,
+            float_dtype=args.train_dtype,
+            preprocess=iter_options.preprocess_fn,
+            max_cache_size=iter_options.max_cache_size,
+            max_cache_fd=iter_options.max_cache_fd,
+        )
+        cls.check_task_requirements(
+            dataset, args.allow_variable_data_keys, train=iter_options.train
+        )
+
+        if Path(
+                Path(iter_options.data_path_and_name_and_type[0][0]).parent, "utt2category"
+        ).exists():
+            utt2category_file = str(
+                Path(
+                    Path(iter_options.data_path_and_name_and_type[0][0]).parent,
+                    "utt2category",
+                )
+            )
+            logging.warning("Reading " + utt2category_file)
+        else:
+            utt2category_file = None
+        batch_sampler = build_batch_sampler(
+            type=iter_options.batch_type,
+            shape_files=iter_options.shape_files,
+            fold_lengths=args.fold_length,
+            batch_size=iter_options.batch_size,
+            batch_bins=iter_options.batch_bins,
+            sort_in_batch=args.sort_in_batch,
+            sort_batch=args.sort_batch,
+            drop_last=False,
+            min_batch_size=torch.distributed.get_world_size()
+            if iter_options.distributed
+            else 1,
+            utt2category_file=utt2category_file,
+        )
+
+        batches = list(batch_sampler)
+        if iter_options.num_batches is not None:
+            batches = batches[: iter_options.num_batches]
+
+        bs_list = [len(batch) for batch in batches]
+
+        logging.info(f"[{mode}] dataset:\n{dataset}")
+        logging.info(f"[{mode}] Batch sampler: {batch_sampler}")
+        logging.info(
+            f"[{mode}] mini-batch sizes summary: N-batch={len(bs_list)}, "
+            f"mean={np.mean(bs_list):.1f}, min={np.min(bs_list)}, max={np.max(bs_list)}"
+        )
+
+        if iter_options.distributed:
+            world_size = torch.distributed.get_world_size()
+            rank = torch.distributed.get_rank()
+            for batch in batches:
+                if len(batch) < world_size:
+                    raise RuntimeError(
+                        f"The batch-size must be equal or more than world_size: "
+                        f"{len(batch)} < {world_size}"
+                    )
+            batches = [batch[rank::world_size] for batch in batches]
+
+        return SequenceIterFactory(
+            dataset=dataset,
+            batches=batches,
+            seed=args.seed,
+            num_iters_per_epoch=iter_options.num_iters_per_epoch,
+            shuffle=iter_options.train,
+            num_workers=args.num_workers,
+            collate_fn=iter_options.collate_fn,
+            pin_memory=args.ngpu > 0,
+        )
+
+    @classmethod
+    def build_chunk_iter_factory(
+            cls,
+            args: argparse.Namespace,
+            iter_options: IteratorOptions,
+            mode: str,
+    ) -> AbsIterFactory:
+        assert check_argument_types()
+
+        dataset = ESPnetDataset(
+            iter_options.data_path_and_name_and_type,
+            float_dtype=args.train_dtype,
+            preprocess=iter_options.preprocess_fn,
+            max_cache_size=iter_options.max_cache_size,
+            max_cache_fd=iter_options.max_cache_fd,
+        )
+        cls.check_task_requirements(
+            dataset, args.allow_variable_data_keys, train=iter_options.train
+        )
+
+        if len(iter_options.shape_files) == 0:
+            key_file = iter_options.data_path_and_name_and_type[0][0]
+        else:
+            key_file = iter_options.shape_files[0]
+
+        batch_sampler = UnsortedBatchSampler(batch_size=1, key_file=key_file)
+        batches = list(batch_sampler)
+        if iter_options.num_batches is not None:
+            batches = batches[: iter_options.num_batches]
+        logging.info(f"[{mode}] dataset:\n{dataset}")
+
+        if iter_options.distributed:
+            world_size = torch.distributed.get_world_size()
+            rank = torch.distributed.get_rank()
+            if len(batches) < world_size:
+                raise RuntimeError("Number of samples is smaller than world_size")
+            if iter_options.batch_size < world_size:
+                raise RuntimeError("batch_size must be equal or more than world_size")
+
+            if rank < iter_options.batch_size % world_size:
+                batch_size = iter_options.batch_size // world_size + 1
+            else:
+                batch_size = iter_options.batch_size // world_size
+            num_cache_chunks = args.num_cache_chunks // world_size
+            # NOTE(kamo): Split whole corpus by sample numbers without considering
+            #   each of the lengths, therefore the number of iteration counts are not
+            #   always equal to each other and the iterations are limitted
+            #   by the fewest iterations.
+            #   i.e. the samples over the counts are discarded.
+            batches = batches[rank::world_size]
+        else:
+            batch_size = iter_options.batch_size
+            num_cache_chunks = args.num_cache_chunks
+
+        return ChunkIterFactory(
+            dataset=dataset,
+            batches=batches,
+            seed=args.seed,
+            batch_size=batch_size,
+            # For chunk iterator,
+            # --num_iters_per_epoch doesn't indicate the number of iterations,
+            # but indicates the number of samples.
+            num_samples_per_epoch=iter_options.num_iters_per_epoch,
+            shuffle=iter_options.train,
+            num_workers=args.num_workers,
+            collate_fn=iter_options.collate_fn,
+            pin_memory=args.ngpu > 0,
+            chunk_length=args.chunk_length,
+            chunk_shift_ratio=args.chunk_shift_ratio,
+            num_cache_chunks=num_cache_chunks,
+        )
+
+    # NOTE(kamo): Not abstract class
+    @classmethod
+    def build_task_iter_factory(
+            cls,
+            args: argparse.Namespace,
+            iter_options: IteratorOptions,
+            mode: str,
+    ) -> AbsIterFactory:
+        """Build task specific iterator factory
+
+        Example:
+
+            >>> class YourTask(AbsTask):
+            ... @classmethod
+            ... def add_task_arguments(cls, parser: argparse.ArgumentParser):
+            ...     parser.set_defaults(iterator_type="task")
+            ...
+            ... @classmethod
+            ... def build_task_iter_factory(
+            ...     cls,
+            ...     args: argparse.Namespace,
+            ...     iter_options: IteratorOptions,
+            ...     mode: str,
+            ... ):
+            ...     return FooIterFactory(...)
+            ...
+            ... @classmethod
+            ... def build_iter_options(
+            ....    args: argparse.Namespace,
+            ...     distributed_option: DistributedOption,
+            ...     mode: str
+            ... ):
+            ...     # if you need to customize options object
+        """
+        raise NotImplementedError
+
+    @classmethod
+    def build_streaming_iterator(
+            cls,
+            data_path_and_name_and_type,
+            preprocess_fn,
+            collate_fn,
+            key_file: str = None,
+            batch_size: int = 1,
+            dtype: str = np.float32,
+            num_workers: int = 1,
+            allow_variable_data_keys: bool = False,
+            ngpu: int = 0,
+            inference: bool = False,
+    ) -> DataLoader:
+        """Build DataLoader using iterable dataset"""
+        assert check_argument_types()
+        # For backward compatibility for pytorch DataLoader
+        if collate_fn is not None:
+            kwargs = dict(collate_fn=collate_fn)
+        else:
+            kwargs = {}
+
+        dataset = IterableESPnetDataset(
+            data_path_and_name_and_type,
+            float_dtype=dtype,
+            preprocess=preprocess_fn,
+            key_file=key_file,
+        )
+        if dataset.apply_utt2category:
+            kwargs.update(batch_size=1)
+        else:
+            kwargs.update(batch_size=batch_size)
+
+        cls.check_task_requirements(
+            dataset, allow_variable_data_keys, train=False, inference=inference
+        )
+
+        return DataLoader(
+            dataset=dataset,
+            pin_memory=ngpu > 0,
+            num_workers=num_workers,
+            **kwargs,
+        )

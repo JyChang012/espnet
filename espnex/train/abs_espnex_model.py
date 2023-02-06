@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional, Tuple, Generic, TypeVar
+from typing import Any, Dict, Optional, Tuple, Generic, TypeVar, Callable, Set, Sequence
 
 import flax
 import flax.linen as nn
@@ -19,7 +19,7 @@ class AbsESPnetModel(Module, ABC):
             self,
             *args: Any,
             **kwargs: Any
-    ) -> Tuple[Array, int, Any]:
+    ) -> Tuple[Array, Dict[str, Any], float, Any]:  # loss, weight, stats, aux
         raise NotImplementedError
 
     @abstractmethod
@@ -30,13 +30,11 @@ class AbsESPnetModel(Module, ABC):
     ) -> Dict[str, Array]:
         raise NotImplementedError
 
-    # TODO: Add `calculate_stats`, which compute un-jittable metrics
-    '''
+    # TODO (Jiayu): specify `aux` type using Generic?
     @abstractmethod
-    def calculate_stats(self, loss: float, weight: int, aux: Any) -> Dict[str, Any]:
-        """
-        Calculate stats of training output. This method will not be JIT compiled since many metrics like WER are not
-        compilable. However, you might call compiled function inside this method.
-        """
+    def build_evaluator(
+            self,
+            *args: Any,
+            **kwargs: Any
+    ) -> Callable[[float, Dict[str, Any], float, Any], Dict[str, Any]]:
         raise NotImplementedError
-    '''
