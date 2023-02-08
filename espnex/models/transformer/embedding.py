@@ -7,7 +7,7 @@ import jax.numpy as jnp
 import numpy as np
 from flax.linen import Dense, Dropout, LayerNorm, Module
 from flax.linen.module import merge_param
-from jax import Array
+from jax import Array, lax
 from jax.random import bernoulli
 
 
@@ -63,7 +63,8 @@ class AddPositionalEncoding(Module):
     dropout_rate: float
     max_len: int = 5000  # initial lengths of positional encoding
     reverse: bool = False  # currently not used
-    init_type: Literal["default", "espnet"] = "default"
+    init_type: Literal["default", "espnet"] = "espnet"
+    decode: bool = False
     deterministic: Optional[bool] = None
 
     @nn.compact
@@ -84,9 +85,23 @@ class AddPositionalEncoding(Module):
             pos_emb_shape
         )
         x_scale = np.sqrt(x.shape[-1])
-        pos_emb = pos_emb[:, :length, :]
+        pe = pos_emb[:, :length, :]
+
+        # internal state to track current decoding position when in single step decoding step
+        if self.decode:
+            is_initialized = self.has_variable('cache', 'cache_index')
+            cache_index = self.variable('cache', 'cache_index',
+                                        lambda: jnp.array(0, dtype=jnp.uint32))
+            if is_initialized:
+                i = cache_index.value
+                cache_index.value = i + 1
+                *_, df = pos_emb.shape
+                pe = lax.dynamic_slice(pos_emb,
+                                       jnp.array((0, i, 0)),
+                                       (1, 1, df))
+
         if x_positions is not None:
-            pos_emb = jnp.take(pos_emb[0], x_positions, axis=0)
-        x = x * x_scale + pos_emb
-        x = Dropout(self.dropout_rate)(x, deterministic)
+            pe = jnp.take(pe[0], x_positions, axis=0)
+        x = x * x_scale + pe
+        x = Dropout(self.dropout_rate, deterministic=deterministic)(x)
         return x
