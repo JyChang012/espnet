@@ -23,11 +23,27 @@ class DecoderLayer(Module):
     def __call__(
             self,
             inputs: Array,
-            decoder_mask: Array,
             encoded: Array,
-            encoder_decoder_mask: Array,
+            self_attention_mask: Optional[Array] = None,
+            cross_attention_mask: Optional[Array] = None,
             deterministic: Optional[bool] = None
-    ):
+    ) -> Array:
+        """
+        Args:
+            inputs (Array): Inputs to decoder. Float array of shape (bs, dec_maxlen, dec_feat_len), or (bs, 1, feat_len) when in single step
+                `decode` mode
+            encoded (Array): Encoded output from encoder. Float array of shape (bs, enc_maxlen, enc_feat_len)
+            self_attention_mask (Array): self attention mask of shape (bs, n_heads, dec_maxlen, dec_maxlen), normally
+                a causal mask when in train mode. Could be `None` when in single step `decode` mode, in which case a
+                causal mask will be auto generated based on `cached_index`.
+            cross_attention_mask (Array): cross attention mask of shape (bs, n_heads, dec_maxlen, enc_maxlen)
+            deterministic (bool): whether to disable dropout
+
+        Returns:
+            output of shape (batch_size, dec_maxlen, out_feat) or (batch_size, 1, out_feat) when in single step
+            `decode` mode
+
+        """
         deterministic = merge_param('deterministic', deterministic, self.deterministic)
 
         x = inputs
@@ -47,7 +63,7 @@ class DecoderLayer(Module):
             return out
 
         # casual self-attention
-        x = attn(x, x, decoder_mask, self.self_attn)
+        x = attn(x, x, self_attention_mask, self.self_attn)
         x = x + residual
         if not self.normalize_before:
             x = LayerNorm()(x)
@@ -56,7 +72,7 @@ class DecoderLayer(Module):
         residual = x
         if self.normalize_before:
             x = LayerNorm()(x)
-        x = attn(x, encoded, encoder_decoder_mask, self.src_attn)
+        x = attn(x, encoded, cross_attention_mask, self.src_attn)
         x = x + residual
         if not self.normalize_before:
             x = LayerNorm()(x)

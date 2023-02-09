@@ -12,30 +12,28 @@ from jax.tree_util import tree_flatten
 
 from espnex.models.transformer.positionwise_feed_forward import PositionwiseFeedForward
 from espnex.models.transformer.multi_layer_conv import MultiLayerConv1d, Conv1dLinear
-from espnex.models.transformer.decoder_layer import DecoderLayer
 from espnex.models.utils import make_pad_mask
+from espnex.models.transformer.decoder import Decoder
 
 
 @mark.parametrize('concat_after', [True, False])
 @mark.parametrize('normalize_before', [True, False])
-def test_decoder_layer_train_mode(normalize_before, concat_after):
-    self_attn = MultiHeadDotProductAttention(num_heads=4, deterministic=False)
-    src_attn = MultiHeadDotProductAttention(num_heads=4, deterministic=False)
-    ff = PositionwiseFeedForward(hidden_units=512, dropout_rate=.5, deterministic=False)
+def test_decoder_train_mode(normalize_before, concat_after):
+    voc_size = 100
 
-    decoder = DecoderLayer(self_attn, src_attn, ff, dropout_rate=.5, normalize_before=normalize_before,
-                           concat_after=concat_after, deterministic=False)
+    decoder = Decoder(voc_size, linear_units=512, num_blocks=3, normalize_before=normalize_before,
+                      concat_after=concat_after, deterministic=False)
+    in_shape = 3, 256
+    in_lens = np.random.randint(1, 256, size=3, dtype=int)
     keys = random.PRNGKey(0)
     keys = random.split(keys)
-    in_shape = 3, 256, 64
-    in_lens = np.random.randint(1, 256, size=3, dtype=int)
     enc_shape = 3, 512, 128
     enc_lens = np.random.randint(1, 512, size=3, dtype=int)
 
-    inp = np.random.randn(*in_shape)
+    inp = np.random.randint(0, voc_size, in_shape)
     encoded = np.random.randn(*enc_shape)
 
-    decoder_causal_mask = make_causal_mask(inp[..., 0])
+    decoder_causal_mask = make_causal_mask(inp)
     decoder_le_mask = ~make_pad_mask(in_lens, 256)
     decoder_mask = make_attention_mask(decoder_le_mask, decoder_le_mask)
     decoder_mask = combine_masks(decoder_causal_mask, decoder_mask)
@@ -45,43 +43,34 @@ def test_decoder_layer_train_mode(normalize_before, concat_after):
 
     variables = decoder.init(dict(zip(['dropout', 'params'], keys)), inp, encoded, decoder_mask, enc_dec_mask)
     y = decoder.apply(variables, inp, encoded, decoder_mask, enc_dec_mask, rngs=dict(dropout=keys[0]))
-    assert y.shape == (3, 256, 64)
+    assert y.shape == (3, 256, voc_size)
 
 
 @mark.parametrize('concat_after', [True, False])
 @mark.parametrize('normalize_before', [True, False])
-def test_decoder_layer_inference_one_step(normalize_before, concat_after):
-    """Test `decode` mode (single step inference mode)."""
-    self_attn = MultiHeadDotProductAttention(num_heads=4, decode=True, deterministic=False)
-    src_attn = MultiHeadDotProductAttention(num_heads=4, deterministic=False)
-    ff = PositionwiseFeedForward(hidden_units=512, dropout_rate=.5, deterministic=False)
+def test_decoder_inference_one_step(normalize_before, concat_after):
+    voc_size = 100
 
-    decoder = DecoderLayer(self_attn, src_attn, ff, dropout_rate=.5, normalize_before=normalize_before,
-                           concat_after=concat_after, deterministic=False)
+    decoder = Decoder(voc_size, linear_units=512, num_blocks=3, normalize_before=normalize_before,
+                      concat_after=concat_after, deterministic=False)
+    decode_shape = 3, 256
+    init_shape = 3, 1
+
     keys = random.PRNGKey(0)
     keys = random.split(keys)
-    decode_shape = 3, 256, 64
-    init_shape = 3, 1, 64
     enc_shape = 3, 512, 128
     enc_lens = np.random.randint(1, 512, size=3, dtype=int)
 
-    inp = np.random.randn(*init_shape)
+    inp = np.zeros(init_shape).astype(int)  # init_shape
     encoded = np.random.randn(*enc_shape)
 
     enc_mask = ~make_pad_mask(enc_lens, 512)  # bs, enc_len
     cross_attn_mask = jnp.expand_dims(enc_mask, [1, 2])  # bs, 1, 1, enc_len
 
-    variables = decoder.init(dict(zip(['dropout', 'params'], keys)), jnp.empty(decode_shape), encoded)
+    variables = decoder.init(dict(zip(['dropout', 'params'], keys)), jnp.empty(decode_shape, dtype=int), encoded, decode=True)
 
     cache = variables['cache']
     params = variables['params']
-
-    # test cache shape
-    for k, v in cache['self_attn'].items():
-        if 'index' in k:
-            assert v.shape == ()
-        else:
-            assert v.shape == (3, 256, 4, 64 // 4)  # expected shape should be (bs, len, n_heads, head_feat_n)
 
     x = inp
     for _ in range(4):
@@ -92,4 +81,6 @@ def test_decoder_layer_inference_one_step(normalize_before, concat_after):
             rngs=dict(dropout=keys[0])
         )
         cache = updated_vars['cache']
-        assert x.shape == init_shape
+        assert x.shape == init_shape + (voc_size,)
+        x = jnp.argmax(x, axis=-1)
+
