@@ -6,8 +6,11 @@ import jax.numpy as jnp
 from flax.linen import Dense, Dropout, LayerNorm, Module, cond, MultiHeadDotProductAttention, compact
 from flax.linen.module import compact, merge_param
 from jax import Array
+from jax.nn.initializers import Initializer
+
 from espnex.models.transformer.positionwise_feed_forward import PositionwiseFeedForward
 from espnex.models.transformer.multi_layer_conv import MultiLayerConv1d, Conv1dLinear
+from espnex.models.utils import inject_args
 
 
 class DecoderLayer(Module):
@@ -17,6 +20,7 @@ class DecoderLayer(Module):
     dropout_rate: float
     normalize_before: bool = True
     concat_after: bool = False
+    kernel_init: Optional[Initializer] = None
     deterministic: Optional[bool] = None
 
     @compact
@@ -57,7 +61,8 @@ class DecoderLayer(Module):
             out = attn_func(inp_q, inp_kv, mask)
             if self.concat_after:
                 out = jnp.concatenate((x, out), axis=-1)
-                out = Dense(feat_size)(out)
+                dense = inject_args(Dense, kernel_init=self.kernel_init)
+                out = dense(feat_size)(out)
             else:
                 out = Dropout(self.dropout_rate, deterministic=deterministic)(out)
             return out

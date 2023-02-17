@@ -10,11 +10,12 @@ from optax import ctc_loss
 import jax.numpy as jnp
 from numpy import ndarray
 import jax
+from jax.nn.initializers import Initializer, glorot_uniform
 
 from espnex.asr.encoder.abc import AbsEncoder
 from espnex.asr.frontend.abc import AbsFrontend
 from espnex.train.abs_espnex_model import AbsESPnetModel
-from espnex.models.utils import make_pad_mask
+from espnex.models.utils import make_pad_mask, inject_args
 from espnet.nets.e2e_asr_common import ErrorCalculator
 from espnex.asr.ctc import ctc_decode
 
@@ -37,9 +38,11 @@ class CTCASRModel(AbsESPnetModel):
     sym_eos: str = "<sos/eos>"
     extract_feats_in_collect_stats: bool = True
     lang_token_id: int = -1
+    kernel_init: Optional[Initializer] = None
 
     def setup(self) -> None:
-        self.out_dense = Dense(self.vocab_size)
+        dense = inject_args(Dense, kernel_init=self.kernel_init)
+        self.out_dense = dense(self.vocab_size)
 
     def __call__(
             self,
@@ -122,11 +125,20 @@ class CTCASRModel(AbsESPnetModel):
         error_calculator = ErrorCalculator(
             token_list.copy(), self.sym_space, self.sym_blank, self.report_cer, self.report_wer
         )
+
+        def convert2char(arr, arr_len):
+            ret = []
+            for x, xlen in zip(arr, arr_len):
+                x = x[:xlen]
+                ret.append(''.join(map(token_list.__getitem__, x)))
+            return ret
+
         def evaluate(
                 loss: float,
                 stats: Dict[str, Any],
                 weight: float,
-                aux: Tuple[ndarray, ndarray, ndarray, ndarray]
+                aux: Tuple[ndarray, ndarray, ndarray, ndarray],
+                return_decoded: Optional[bool] = False
         ) -> Dict[str, Any]:
 
             decoded, decoded_length, text, text_lengths = aux
@@ -134,14 +146,19 @@ class CTCASRModel(AbsESPnetModel):
             decoded = decoded[:, :np.max(decoded_length)]
             text = text[:, :np.max(text_lengths)]
 
-            decoded_str, text_str = error_calculator.convert_to_char(decoded, text)
+            decoded_str = convert2char(decoded, decoded_length)
+            text_str = convert2char(text, text_lengths)
 
             cer = error_calculator.calculate_cer(decoded_str, text_str)
             wer = error_calculator.calculate_wer(decoded_str, text_str)
+
             stats.update(dict(
                 wer=wer,
                 cer=cer,
             ))
+            if return_decoded:
+                return stats, decoded_str, text_str
+
             return stats
         return evaluate
 

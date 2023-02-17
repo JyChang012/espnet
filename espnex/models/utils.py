@@ -5,15 +5,19 @@ import jax.numpy as jnp
 from jax import Array
 
 
-def make_pad_mask(  # a simplified version of the torch one, to support JIT compilation.
+def make_pad_mask(  # a simplified version of the torch one, support JIT compilation.
     lengths: Array, maxlen: int, axis: int = -1
 ) -> Array:
-    """Make mask tensor containing indices of padded part. Padded part is 1, others are zero.
+    """Make mask tensor containing indices of padded part. Padded part is 1, others are zero. An additional dimension of
+     length `maxlen` is inserted at `axis` position, indicating padding.
+
+    Examples:
+        lengths is of shape (4, 5, 3), axis is 1, maxlen is 200, then output is of shape (4, 200, 5, 3).
 
     Args:
-        lengths (LongTensor or List): Batches of lengths (*B,).
+        lengths (LongTensor or List): Batches of lengths (*B,)
         maxlen (int): Length of the returned mask array
-
+        axis: position to insert the padding axis
 
     Returns:
         Tensor: Boolean mask array containing indices of padded part.
@@ -26,15 +30,15 @@ def make_pad_mask(  # a simplified version of the torch one, to support JIT comp
     out_shape = prefix_shape + (maxlen,) + suffix_shape
     lengths = jnp.broadcast_to(lengths, out_shape)  # (..., maxlen, ...)
     mask = jnp.arange(maxlen)  # [0, 1, 2, ..., maxlen], (maxlen,)
-    mask = jnp.expand_dims(mask, [1 + i for i in range(len(suffix_shape))])
+    mask = jnp.expand_dims(mask, [1 + i for i in range(len(suffix_shape))])  # (maxlen, ...)
     # (1, 1, ..., 1, maxlen, 1, ..., 1)
-    mask = mask >= lengths
+    mask = mask >= lengths  # (maxlen, ...) >= (..., 1, ...) -> (..., maxlen, ...)
     return mask
 
 
-def inject_args(f: Callable, *args: Any, **kwargs: Any):
+def inject_args(f: Callable, *args: Any, **kwargs: Any) -> Callable:
     """
-    Inject not None arguments to callable. Mainly used to reduce redundant code for initing sub module.
+    Inject not-None keyword arguments to callable. Mainly used to reduce boilerplate code for initializing submodule.
     Args:
         f: Callable
         *args: Any

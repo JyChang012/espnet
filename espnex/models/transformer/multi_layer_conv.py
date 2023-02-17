@@ -1,8 +1,12 @@
+from functools import partial
 from typing import Optional
 
 import flax.linen as nn
 from flax.linen import Conv, Dense, Dropout, Module, merge_param, relu
+from jax.nn.initializers import Initializer
 from jax import Array
+
+from espnex.models.utils import inject_args
 
 
 class MultiLayerConv1d(Module):
@@ -21,6 +25,7 @@ class MultiLayerConv1d(Module):
     hidden_channels: int
     kernel_size: int
     dropout_rate: float
+    kernel_init: Optional[Initializer] = None
     deterministic: Optional[bool] = None
 
     @nn.compact
@@ -36,19 +41,21 @@ class MultiLayerConv1d(Module):
         """
         deterministic = merge_param("deterministic", self.deterministic, deterministic)
         in_channels = x.shape[-1]
-        x = Conv(
+
+        conv = inject_args(Conv,
+                           kernel_init=self.kernel_init,
+                           strides=1,
+                           padding=(self.kernel_size - 1) // 2)
+
+        x = conv(
             self.hidden_channels,
             self.kernel_size,
-            strides=1,
-            padding=(self.kernel_size - 1) // 2,
         )(x)
         x = relu(x)
         x = Dropout(self.dropout_rate)(x, deterministic)
-        x = Conv(
+        x = conv(
             in_channels,
             self.kernel_size,
-            strides=1,
-            padding=(self.kernel_size - 1) // 2,
         )(x)
         return x
 
@@ -63,6 +70,7 @@ class Conv1dLinear(Module):
     hidden_channels: int
     kernel_size: int
     dropout_rate: float
+    kernel_init: Optional[Initializer] = None
     deterministic: Optional[bool] = None
 
     @nn.compact
@@ -78,7 +86,11 @@ class Conv1dLinear(Module):
         """
         deterministic = merge_param("deterministic", self.deterministic, deterministic)
         in_channels = x.shape[-1]
-        x = Conv(
+
+        inject = partial(inject_args, kernel_init=self.kernel_init)
+        conv, dense = map(inject, (Conv, Dense))
+
+        x = conv(
             self.hidden_channels,
             self.kernel_size,
             strides=1,
@@ -86,5 +98,5 @@ class Conv1dLinear(Module):
         )(x)
         x = relu(x)
         x = Dropout(self.dropout_rate)(x, deterministic)
-        x = Dense(in_channels)(x)
+        x = dense(in_channels)(x)
         return x
