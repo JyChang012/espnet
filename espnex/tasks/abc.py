@@ -9,8 +9,10 @@ from typing import List, Tuple, Optional, Callable, Dict, Sequence, Any, Union
 import humanfriendly
 import jax.random
 import numpy as np
+import optax
 import torch
 from flax.core import FrozenDict
+from optax._src.clipping import clip_by_global_norm
 from typeguard import check_argument_types
 from torch.utils.data import DataLoader
 from jax import Array, random, device_get
@@ -748,17 +750,21 @@ class AbsTask(ABC):
             raise RuntimeError(
                 "build_optimizers() must be overridden if num_optimizers != 1"
             )
+        # 0. build gradient processors
+        clipper = clip_by_global_norm(args.grad_clip)  # TODO: support p-norm clipping
 
-        # 0. build scheduler
+        # 1. build scheduler
         scheduler_class = scheduler_classes.get(args.scheduler)
         assert scheduler_class is not None, f"must be one of {list(scheduler_classes)}: {args.scheduler}"
         schedule = scheduler_class(**args.scheduler_conf)
 
-        # 1. build optimizer
+        # 2. build optimizer
         optim_class = optim_classes.get(args.optim)
         assert optim_class is not None, f"must be one of {list(optim_classes)}: {args.optim}"
         # TODO: Add DDP support and exclude_weight_decay
         tx = optim_class(learning_rate=schedule, **args.optim_conf)
+
+        tx = optax.chain(clipper, tx)
         txs = [tx]
         return txs
 
@@ -1014,9 +1020,19 @@ class AbsTask(ABC):
                 mode="valid",
             )
 
-            # TODO: ignore attention plot and matplotlib
-            args.num_att_plot = 0
-            plot_attention_iter_factory = None
+            # attention plot iter factory
+            if not args.use_matplotlib and args.num_att_plot != 0:
+                args.num_att_plot = 0
+                logging.info("--use_matplotlib false => Changing --num_att_plot to 0")
+
+            if args.num_att_plot != 0:
+                plot_attention_iter_factory = cls.build_iter_factory(
+                    args=args,
+                    distributed_option=distributed_option,
+                    mode="plot_att",
+                )
+            else:
+                plot_attention_iter_factory = None
 
             # 8. create TrainState
             jax_key, key = random.split(jax_key)

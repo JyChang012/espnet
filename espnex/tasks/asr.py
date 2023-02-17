@@ -1,13 +1,14 @@
 import argparse
 import logging
+from functools import partial
 from typing import Callable, Collection, Dict, List, Optional, Tuple, Any
 
 import jax
-import jax.numpy as jnp
 import numpy as np
 from flax.core import FrozenDict
 from jax import Array
 from typeguard import check_argument_types, check_return_type
+from jax.nn.initializers import Initializer, glorot_uniform, glorot_normal, he_normal, he_uniform
 
 from espnet2.train.class_choices import ClassChoices
 from espnet2.utils.get_default_kwargs import get_default_kwargs
@@ -19,6 +20,7 @@ from espnex.asr.encoder.abc import AbsEncoder
 from espnex.asr.encoder.transformer_encoder import TransformerEncoder
 from espnex.asr.frontend.abc import AbsFrontend
 from espnex.asr.frontend.default import DefaultFrontend
+from espnex.models.utils import inject_args
 from espnex.tasks.abc import AbsTask
 from espnex.train.abs_espnex_model import AbsESPnetModel
 from espnex.train.collate_fn import CommonCollateFn
@@ -32,6 +34,14 @@ frontend_choices = ClassChoices(
     ),
     type_check=AbsFrontend,
     default="default",
+)
+
+# cannot use ClassChoices here due to a boring issue
+init_choices = dict(
+    xavier_uniform=glorot_uniform,
+    xavier_normal=glorot_normal,
+    kaiming_uniform=he_uniform,
+    kaiming_normal=he_normal
 )
 
 model_choices = ClassChoices(
@@ -95,7 +105,6 @@ class ASRTask(AbsTask):
             default=None,
             help="The initialization method",
             choices=[
-                "chainer",
                 "xavier_uniform",
                 "xavier_normal",
                 "kaiming_uniform",
@@ -110,7 +119,6 @@ class ASRTask(AbsTask):
             default=None,
             help="The number of input dimension of the feature",
         )
-
         # group.add_argument(
         #     "--ctc_conf",
         #     action=NestedDictAction,
@@ -313,6 +321,8 @@ class ASRTask(AbsTask):
         vocab_size = len(token_list)
         logging.info(f"Vocabulary size: {vocab_size }")
 
+        initializer = init_choices.get(args.init, None)()
+
         # 1. frontend
         if args.input_size is None:
             # Extract features in the model
@@ -331,10 +341,11 @@ class ASRTask(AbsTask):
         # 3. Normalization layer
 
         # 4. Pre-encoder input block
-        # NOTE(kan-bayashi): Use getattr to keep the compatibility
 
         # 4. Encoder
         encoder_class = encoder_choices.get_class(args.encoder)
+        if 'kernel_init' not in args.encoder_conf:
+            encoder_class = inject_args(encoder_class, kernel_init=initializer)
         encoder = encoder_class(**args.encoder_conf)
 
         # 5. Post-encoder block
@@ -359,22 +370,28 @@ class ASRTask(AbsTask):
             vocab_size=vocab_size,
             frontend=frontend,
             encoder=encoder,
+            kernel_init=initializer
         )
 
         # 8. Initialize
 
         # generate fake data to init parameters
-        speech = jnp.ones([1, 2048], dtype='float')
-        speech_lengths = jnp.array([2048])
-        text = jnp.ones([1, 128], dtype='int')
-        text_lengths = jnp.array([128])
+        speech = np.ones([1, 2048], dtype='float')
+        speech_lengths = np.array([2048])
+        text = np.ones([1, 128], dtype='int')
+        text_lengths = np.array([128])
         rng = args.seed  # FIXME(Jiayu): manage seed used in different place!
         rng = jax.random.PRNGKey(rng)
         rng = jax.random.split(rng, 3)
         rng = dict(zip(["skip_layer", "dropout", "params"], rng))
         # TODO: currently hardcode names of required RNG names, might need modifications later
-        variables = model.init(rng, speech, speech_lengths, text, text_lengths, False)
-        tabular_repr = model.tabulate(rng, speech, speech_lengths, text, text_lengths, False)
+        variables = jax.jit(partial(model.init, training=False))(
+            rng, speech, speech_lengths, text, text_lengths
+        )
+        # tabular_repr = jax.jit(model.tabulate, static_argnames='training')(
+        #     rng, speech, speech_lengths, text, text_lengths, training=False
+        # )
+        tabular_repr = 'No tabular_repr repr currently!'
         evaluator = model.build_evaluator(token_list)
 
         return model, variables, tabular_repr, evaluator
