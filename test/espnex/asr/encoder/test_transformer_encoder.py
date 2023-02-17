@@ -3,13 +3,15 @@ import numpy as np
 import torch
 from jax.random import PRNGKey, randint, split, uniform
 from numpy.testing import assert_equal
+from jax.nn.initializers import glorot_uniform
 
 from espnet2.asr.encoder.transformer_encoder import TransformerEncoder as TorchTE
 from espnex.asr.encoder.transformer_encoder import TransformerEncoder
+from test.espnex.utils import *
 
 
 def test_transformer_encoder():
-    model = TransformerEncoder()
+    model = TransformerEncoder(kernel_init=glorot_uniform())
     rng = PRNGKey(0)
     x = uniform(rng, [32, 256, 128])  # (bs, t, f)
     (rng,) = split(rng, 1)
@@ -25,8 +27,12 @@ def test_transformer_encoder():
     apply = jax.jit(apply, static_argnames="deterministic")
     y, olens, _ = apply(vars, x, ilens, False, rngs)
 
-    """
     tmodel = TorchTE(128)
+
+    assert compare_params(tmodel, vars['params'])
+
+
+    """
     tx = torch.Tensor(jax.device_get(x))
     tlens = torch.Tensor(jax.device_get(ilens))
     with torch.no_grad():

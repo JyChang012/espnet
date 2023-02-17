@@ -5,6 +5,7 @@ import logging
 import time
 from contextlib import contextmanager
 from dataclasses import is_dataclass
+from functools import partial
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Union, Any, Callable
 
@@ -12,6 +13,7 @@ import flax.serialization
 import humanfriendly
 import jax
 from flax.core import FrozenDict
+from flax.traverse_util import flatten_dict
 from jax import random, Array
 import numpy as np
 import jax.numpy as jnp
@@ -25,7 +27,7 @@ from flax.training import checkpoints
 
 from espnet2.iterators.abs_iter_factory import AbsIterFactory
 from espnet2.main_funcs.average_nbest_models import average_nbest_models
-from espnet2.main_funcs.calculate_all_attentions import calculate_all_attentions
+from espnex.main_funcs.calculate_all_attentions import calculate_all_attentions
 from espnet2.schedulers.abs_scheduler import (
     AbsBatchStepScheduler,
     AbsEpochStepScheduler,
@@ -52,8 +54,8 @@ class TrainerOptions(PyTreeNode):
     train_dtype: str
     grad_noise: bool
     accum_grad: int
-    grad_clip: float
-    grad_clip_type: float
+    # grad_clip: float  # moved to GradTransformation
+    # grad_clip_type: float
     log_interval: Optional[int]
     no_forward_run: bool
     use_matplotlib: bool
@@ -109,14 +111,27 @@ def pre_eval_step(
         batch: Dict[str, Any],
         apply_fn: Callable,
 ):
-    (loss, stats, weight, aux), mod_vars = apply_fn(
+    loss, stats, weight, aux = apply_fn(
         {'params': params},
-        training=False,
-        mutable='intermediates',
-        **batch
+        **batch,
+        training=False
     )
 
-    return loss, stats, weight, aux, mod_vars['intermediates']
+    return loss, stats, weight, aux
+
+
+def get_attention_weight_step(
+        params: FrozenDict,
+        sample: Dict[str, Any],
+        apply_fn: Callable
+):
+    _, new_vars = apply_fn(dict(params=params), **sample, training=False, mutable='intermediates')
+    intermediates = new_vars['intermediates']
+    weights = flatten_dict(intermediates)
+    weights = {'.'.join(k): v[0] if isinstance(v, Sequence) else v
+               for k, v in weights.items()
+               if 'attention_weight' in k[-1]}
+    return weights
 
 
 class Trainer:
@@ -174,6 +189,12 @@ class Trainer:
 
         jitted_train_step = jax.jit(train_step)
         jitted_eval_step = jax.jit(pre_eval_step, static_argnames='apply_fn')
+        jitted_get_attention_weight_step = jax.jit(
+            partial(get_attention_weight_step, apply_fn=state.apply_fn)
+        )
+
+        # TODO: return decoded for debugging
+        evaluator = partial(evaluator, return_decoded=True)
 
         start_time = time.perf_counter()
         for iepoch in range(start_epoch, trainer_options.max_epoch + 1):
@@ -210,7 +231,7 @@ class Trainer:
                 all_steps_are_invalid = new_state is None
 
             with reporter.observe('valid') as sub_reporter:
-                cls.validate_one_epoch(
+                indices, decoded, ref = cls.validate_one_epoch(
                     jitted_eval_step,
                     state.params,
                     evaluator,
@@ -219,10 +240,29 @@ class Trainer:
                     sub_reporter,
                     trainer_options
                 )
-            # TODO: add plot attention
+
+                p = output_dir / 'val_decoded' / f'ep{iepoch}'
+                p.parent.mkdir(parents=True, exist_ok=True)
+                to_write = zip(indices, ref, decoded)
+                to_write = map(lambda x: '\n'.join(x), to_write)
+                to_write = '\n\n'.join(to_write)
+                with open(p, 'w') as f:
+                    f.write(to_write)
+
+            if plot_attention_iter_factory is not None:
+                with reporter.observe("att_plot") as sub_reporter:
+                    cls.plot_attention(
+                        state.params,
+                        get_attention_weight_step=jitted_get_attention_weight_step,
+                        output_dir=output_dir / "att_ws",
+                        summary_writer=train_summary_writer,
+                        iterator=plot_attention_iter_factory.build_iter(iepoch),
+                        reporter=sub_reporter,
+                        options=trainer_options,
+                    )
 
             # 3. Report the results
-            # TODO: add tensorboard, wandb, etc
+            # TODO: add wandb, etc
             logging.info(reporter.log_message())
             if train_summary_writer is not None:
                 reporter.tensorboard_add_scalar(train_summary_writer, key1="train")
@@ -325,8 +365,6 @@ class Trainer:
     ) -> Optional[TrainState]:
         grad_noise = options.grad_noise
         accum_grad = options.accum_grad
-        grad_clip = options.grad_clip
-        grad_clip_type = options.grad_clip_type
         log_interval = options.log_interval
         no_forward_run = options.no_forward_run
         ngpu = options.ngpu
@@ -346,6 +384,7 @@ class Trainer:
         for iiter, (utt_id, batch) in enumerate(
                 reporter.measure_iter_time(iterator, "iter_time"), 1
         ):
+            '''
             with open('itx.txt', 'a') as f:
                 f.write(f'{iiter}:\n')
                 for k, v in batch.items():
@@ -356,6 +395,7 @@ class Trainer:
                     else:
                         f.write(f'Key {k}: {v}')
                     f.write('\n')
+            '''
 
             # TODO: measure compile / forward / backward time separately
             with reporter.measure_time('step_time'):
@@ -377,7 +417,6 @@ class Trainer:
                     reporter.wandb_log()
         return state
 
-
     @classmethod
     def validate_one_epoch(
             cls,
@@ -392,19 +431,108 @@ class Trainer:
         ngpu = options.ngpu
         no_forward_run = options.no_forward_run
 
-        all_int = []
-
+        indices = []
+        decoded = []
+        ref = []
         for (utt_id, batch) in iterator:
             if no_forward_run:
                 continue
             retval = pre_eval_step(params, batch, apply_fn)
             retval = jax.device_get(retval)
-            loss, stats, weight, aux, intm = retval
+            loss, stats, weight, aux = retval  # TODO: currently not using intermediates!
 
-            all_int.append(intm)
+            # *retval, _ = retval
+            stats, dec, text_str = evaluator(*retval)
 
-            *retval, _ = retval
-            stats = evaluator(*retval)
+            indices.extend(utt_id)
+            decoded.extend(dec)
+            ref.extend(text_str)
 
             reporter.register(stats, weight)
             reporter.next()
+
+        return indices, decoded, ref
+
+    @classmethod
+    def plot_attention(
+            cls,
+            params: FrozenDict,
+            get_attention_weight_step: Callable[[FrozenDict, Dict[str, Any]], Dict[str, Any]],
+            output_dir: Optional[Path],
+            summary_writer,
+            iterator: Iterable[Tuple[List[str], Dict[str, np.ndarray]]],
+            reporter: SubReporter,
+            options: TrainerOptions,
+    ) -> None:
+        import matplotlib
+
+        no_forward_run = options.no_forward_run
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        from matplotlib.ticker import MaxNLocator
+
+        for ids, batch in iterator:
+            assert isinstance(batch, dict), type(batch)
+            assert len(next(iter(batch.values()))) == len(ids), (
+                len(next(iter(batch.values()))),
+                len(ids),
+            )
+
+            # batch["utt_id"] = ids
+            if no_forward_run:
+                continue
+
+            att_dict = calculate_all_attentions(
+                get_attention_weight_step,
+                params,
+                batch
+            )
+
+            for k, att_list in att_dict.items():
+                assert len(att_list) == len(ids), (len(att_list), len(ids))
+                for id_, att_w in zip(ids, att_list):
+                    if att_w.ndim == 2:
+                        att_w = att_w[None]
+                    elif att_w.ndim == 4:
+                        # In multispkr_asr model case, the dimension could be 4.
+                        att_w = np.concatenate(
+                            [att_w[i] for i in range(att_w.shape[0])], axis=0
+                        )
+                    elif att_w.ndim > 4 or att_w.ndim == 1:
+                        raise RuntimeError(f"Must be 2, 3 or 4 dimension: {att_w.ndim}")
+
+                    w, h = plt.figaspect(1.0 / len(att_w))
+                    fig = plt.Figure(figsize=(w * 1.3, h * 1.3))
+                    axes = fig.subplots(1, len(att_w))
+                    if len(att_w) == 1:
+                        axes = [axes]
+
+                    for ax, aw in zip(axes, att_w):
+                        ax.imshow(aw.astype(np.float32), aspect="auto")
+                        ax.set_title(f"{k}_{id_}")
+                        ax.set_xlabel("Input")
+                        ax.set_ylabel("Output")
+                        ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+                        ax.yaxis.set_major_locator(MaxNLocator(integer=True))
+
+                    if output_dir is not None:
+                        p = output_dir / id_ / f"{k}.{reporter.get_epoch()}ep.png"
+                        p.parent.mkdir(parents=True, exist_ok=True)
+                        fig.savefig(p)
+
+                    if summary_writer is not None:
+                        summary_writer.add_figure(
+                            f"{k}_{id_}", fig, reporter.get_epoch()
+                        )
+
+                    if options.use_wandb:
+                        import wandb
+
+                        wandb.log({f"attention plot/{k}_{id_}": wandb.Image(fig)})
+            reporter.next()
+
+
+
+
+
