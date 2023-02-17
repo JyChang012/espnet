@@ -4,6 +4,17 @@ from jax import random
 import numpy as np
 from jax.tree_util import tree_map
 import jax
+from pytest import mark
+
+
+@mark.skip
+def test_plot_lr():
+    import matplotlib.pyplot as plt
+
+    schedule = warmup_schedule(peak_lr=1e-3, warmup_steps=800)
+    lrs = schedule(np.arange(5000))
+    plt.plot(lrs)
+    plt.show()
 
 
 def test_warmup_schedule():
@@ -28,7 +39,3 @@ def test_warmup_schedule():
     for _ in range(4):
         grads = get_random_params()
         opt_state, params = update(grads, opt_state, params)
-
-
-
-
