@@ -1,4 +1,5 @@
-from typing import Callable, Optional, Sequence, Tuple, TypeVar, Union
+from functools import partial
+from typing import Callable, Optional, Sequence, Tuple, TypeVar, Union, Any
 
 import flax.linen as nn
 import jax
@@ -8,6 +9,7 @@ from flax.linen import Conv, Dense, Dropout, LayerNorm, Module
 from flax.linen.module import merge_param
 from jax import Array
 from jax.random import bernoulli
+from jax.nn.initializers import Initializer, glorot_uniform
 
 from espnet.nets.pytorch_backend.transformer.subsampling import (
     TooShortUttError,
@@ -19,11 +21,11 @@ from ..transformer.embedding import AddPositionalEncoding
 
 
 def get_output_lengths(
-    lengths,
-    kernel_sizes,
-    strides=1,
-    paddings=0,
-    dilations=1,
+        lengths,
+        kernel_sizes,
+        strides=1,
+        paddings=0,
+        dilations=1,
 ):
     return (lengths + 2 * paddings - dilations * (kernel_sizes - 1) - 1) // strides + 1
 
@@ -34,11 +36,12 @@ class Conv2dSubsampling(nn.Module):
     kernel_sizes: Sequence[int]
     strides: Sequence[int]
     pos_enc: Optional[Callable[[Array], Array]] = None
+    kernel_init: Optional[Initializer] = None
     deterministic: Optional[bool] = None
 
     @nn.compact
     def __call__(
-        self, x: Array, ilens: OptionalArray, deterministic: Optional[bool] = None
+            self, x: Array, ilens: OptionalArray, deterministic: Optional[bool] = None
     ) -> Tuple[Array, OptionalArray]:
         """Subsample x.
 
@@ -53,13 +56,20 @@ class Conv2dSubsampling(nn.Module):
         """
         deterministic = merge_param("deterministic", self.deterministic, deterministic)
 
+        if self.kernel_init is not None:
+            init_conv = partial(Conv, kernel_init=self.kernel_init)
+            init_dense = partial(Dense, kernel_init=self.kernel_init)
+        else:
+            init_conv = Conv
+            init_dense = Dense
+
         x = jnp.expand_dims(x, -1)  # (b, t, f, c=1)
         for kernel, stride in zip(self.kernel_sizes, self.strides):
-            x = Conv(self.odim, [kernel] * 2, stride, padding=0)(x)  # (b, t, f, d)
+            x = init_conv(self.odim, [kernel] * 2, stride, padding=0)(x)  # (b, t, f, d)
             x = nn.relu(x)
         b, t, *_ = x.shape
         x = x.reshape((b, t, -1))  # (b, t, f * d)
-        x = Dense(self.odim)(x)
+        x = init_dense(self.odim)(x)
         if self.pos_enc is None:
             x = AddPositionalEncoding(self.dropout_rate, init_type="espnet")(
                 x, deterministic=deterministic
@@ -82,16 +92,25 @@ defaults_settings = {
 
 
 def get_default_conv2d_subsampling(
-    odim: int,
-    subsample_ratio: int,
-    dropout_rate: float,
-    pos_enc: Optional[Module] = None,
-    deterministic: Optional[bool] = None,
+        odim: int,
+        subsample_ratio: int,
+        dropout_rate: float,
+        pos_enc: Optional[Module] = None,
+        deterministic: Optional[bool] = None,
+        **kwargs: Any
 ) -> Conv2dSubsampling:
     assert (
-        subsample_ratio in defaults_settings
+            subsample_ratio in defaults_settings
     ), f"subsample_ratio must be one of {list(defaults_settings.keys())}!"
     kernels, strides = defaults_settings[subsample_ratio]
+
     return Conv2dSubsampling(
-        odim, dropout_rate, kernels, strides, pos_enc, deterministic
+        odim=odim,
+        dropout_rate=dropout_rate,
+        kernel_sizes=kernels,
+        strides=strides,
+        pos_enc=pos_enc,
+        deterministic=deterministic,
+        **kwargs
     )
+
