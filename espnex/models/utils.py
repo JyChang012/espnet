@@ -1,4 +1,5 @@
-from typing import Optional
+from functools import partial
+from typing import Optional, Callable, Any
 
 import jax.numpy as jnp
 from jax import Array
@@ -29,3 +30,21 @@ def make_pad_mask(  # a simplified version of the torch one, to support JIT comp
     # (1, 1, ..., 1, maxlen, 1, ..., 1)
     mask = mask >= lengths
     return mask
+
+
+def inject_args(f: Callable, *args: Any, **kwargs: Any):
+    """
+    Inject not None arguments to callable. Mainly used to reduce redundant code for initing sub module.
+    Args:
+        f: Callable
+        *args: Any
+        **kwargs: Any
+
+    Returns:
+        Callable with additional args passed by default.
+
+    """
+    kwargs = {k: v for k, v in kwargs.items() if v is not None}
+    return partial(f, *args, **kwargs) if kwargs or args else f
+
+

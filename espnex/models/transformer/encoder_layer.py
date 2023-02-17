@@ -1,3 +1,4 @@
+from functools import partial
 from typing import Callable, Optional, Tuple
 
 import flax.linen as nn
@@ -7,6 +8,9 @@ from flax.linen import Dense, Dropout, LayerNorm, Module, cond
 from flax.linen.module import compact, merge_param
 from jax import Array
 from jax.random import bernoulli
+from jax.nn.initializers import Initializer, glorot_uniform
+
+from espnex.models.utils import inject_args
 
 
 class EncoderLayer(Module):
@@ -37,6 +41,7 @@ class EncoderLayer(Module):
     concat_after: bool = False
     stochastic_depth_rate: float = 0.0
     rng_collection: str = "skip_layer"
+    kernel_init: Optional[Initializer] = None
     deterministic: Optional[bool] = None
 
     @compact
@@ -82,6 +87,8 @@ class EncoderLayer(Module):
         """
         stoch_layer_coeff = 1.0 / (1 - self.stochastic_depth_rate)
 
+        dense = inject_args(Dense, kernel_init=self.kernel_init)
+
         residual = x
         if self.normalize_before:
             x = LayerNorm()(x)
@@ -91,13 +98,13 @@ class EncoderLayer(Module):
 
         if self.concat_after:
             x_concat = jnp.concatenate(
-                (x, self.self_attn(x_q, x, mask, deterministic)), axis=-1
+                (x, self.self_attn(x_q, x, mask)), axis=-1
             )
-            x = residual + stoch_layer_coeff * Dense(x.shape[-1])(x_concat)
+            x = residual + stoch_layer_coeff * dense(x.shape[-1])(x_concat)
         else:
-            x = residual + stoch_layer_coeff * Dropout(self.dropout_rate)(
-                self.self_attn(x_q, x, mask, deterministic), deterministic=deterministic
-            )
+            x = residual + stoch_layer_coeff * Dropout(
+                self.dropout_rate, deterministic=deterministic
+            )(self.self_attn(x_q, x, mask))
 
         if not self.normalize_before:
             x = LayerNorm()(x)
@@ -105,9 +112,9 @@ class EncoderLayer(Module):
         residual = x
         if self.normalize_before:
             x = LayerNorm()(x)
-        x = residual + stoch_layer_coeff * Dropout(self.dropout_rate)(
-            self.feed_forward(x), deterministic
-        )
+        x = residual + stoch_layer_coeff * Dropout(
+            self.dropout_rate, deterministic=deterministic
+        )(self.feed_forward(x))
         if not self.normalize_before:
             x = LayerNorm()(x)
 

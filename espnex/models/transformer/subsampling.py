@@ -17,7 +17,8 @@ from espnet.nets.pytorch_backend.transformer.subsampling import (
 )
 from espnex.typing import OptionalArray
 
-from ..transformer.embedding import AddPositionalEncoding
+from espnex.models.transformer.embedding import AddPositionalEncoding
+from espnex.models.utils import inject_args
 
 
 def get_output_lengths(
@@ -56,12 +57,8 @@ class Conv2dSubsampling(nn.Module):
         """
         deterministic = merge_param("deterministic", self.deterministic, deterministic)
 
-        if self.kernel_init is not None:
-            init_conv = partial(Conv, kernel_init=self.kernel_init)
-            init_dense = partial(Dense, kernel_init=self.kernel_init)
-        else:
-            init_conv = Conv
-            init_dense = Dense
+        init_conv = inject_args(Conv, kernel_init=self.kernel_init)
+        init_dense = inject_args(Dense, kernel_init=self.kernel_init)
 
         x = jnp.expand_dims(x, -1)  # (b, t, f, c=1)
         for kernel, stride in zip(self.kernel_sizes, self.strides):
