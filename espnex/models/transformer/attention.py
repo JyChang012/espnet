@@ -1,4 +1,4 @@
-"""Attention module modified form Flax to support attention weights extraction."""
+"""Attention module forked from Flax to support attention weights extraction."""
 
 
 import functools
