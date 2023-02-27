@@ -18,8 +18,6 @@ from espnex.models.transformer.positionwise_feed_forward import PositionwiseFeed
 from espnex.models.transformer.stochastic_sequential import StochasticSequential
 from espnex.asr.decoder.abc import AbsDecoder
 
-from jax.tree_util import tree_map
-
 
 class TransformerDecoder(AbsDecoder):
     vocab_size: int

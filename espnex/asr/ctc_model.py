@@ -149,6 +149,9 @@ class CTCASRModel(AbsESPnetModel):
             decoded_str = convert2char(decoded, decoded_length)
             text_str = convert2char(text, text_lengths)
 
+            # filter out empty text_str
+            decoded_str, text_str = zip(*((d, t) for d, t in zip(decoded_str, text_str) if t))
+
             cer = error_calculator.calculate_cer(decoded_str, text_str)
             wer = error_calculator.calculate_wer(decoded_str, text_str)
 
