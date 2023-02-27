@@ -1,4 +1,5 @@
 from typing import Collection, Dict, List, Tuple, Union
+from math import log2, ceil
 
 import numpy as np
 import torch
@@ -27,6 +28,8 @@ def common_collate_fn(
     float_pad_value: Union[float, int] = 0.0,
     int_pad_value: int = -32768,
     not_sequence: Collection[str] = (),
+    pad_length_to_power_of_2: bool = True,
+    pad_batch_to_power_of_2: bool = True,
 ) -> Tuple[List[str], Dict[str, np.ndarray]]:
     """Concatenate ndarray-list to an array and convert to JAX Array.
 
@@ -68,15 +71,31 @@ def common_collate_fn(
         array_list = [d[key] for d in data_list]
 
         # Assume the first axis is length:
-        # tensor_list: Batch x (Length, ...)
-        tensor_list = [torch.from_numpy(a) for a in array_list]
-        # tensor: (Batch, Length, ...)
-        array = pad_list(tensor_list, pad_value).numpy()
+        # Batch x (Length, ...)
+        bsize = len(array_list)
+        if pad_batch_to_power_of_2:
+            bsize = 2 ** ceil(log2(bsize))
+
+        maxlen = max(arr.shape[0] for arr in array_list)
+
+        if pad_length_to_power_of_2:
+            maxlen = 2 ** ceil(log2(maxlen))
+
+        suffix_shape = list(array_list[0].shape[1:])
+        dtype = array_list[0].dtype
+        array = np.empty([bsize, maxlen] + suffix_shape, dtype=dtype)
+        array.fill(pad_value)
+        for i, arr in enumerate(array_list):
+            le = arr.shape[0]
+            array[i, :le] = arr
+
         array_dict[key] = array
 
         # lens: (Batch,)
         if key not in not_sequence:
-            lens = np.array([d[key].shape[0] for d in data_list], dtype=int)
+            lens = np.zeros(bsize, dtype=int)
+            for i, d in enumerate(data_list):
+                lens[i] = d[key].shape[0]
             array_dict[key + "_lengths"] = lens
 
     out = (uttids, array_dict)
