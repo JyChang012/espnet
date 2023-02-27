@@ -15,7 +15,7 @@ class AbsESPnetModel(Module, ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def __call__(  # keyword only args
+    def __call__(
             self,
             *args: Any,
             **kwargs: Any

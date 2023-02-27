@@ -80,9 +80,10 @@ def train_step(
         state: TrainState,
         batch: Dict[str, Any],
         rng_key: Optional[random.PRNGKeyArray] = None,
+        rng_key_names: Optional[Sequence[str]] = None,
 ):
     if rng_key is not None:
-        rng_key_names = 'dropout', 'skip_layer'
+        assert rng_key_names is not None, 'Rng key is not None but no rng key names are provided!'
         rng_key = random.fold_in(rng_key, state.step)
         rngs = dict(zip(
             rng_key_names,
@@ -154,6 +155,7 @@ class Trainer:
             evaluator: Callable[..., Dict[str, Any]],
             plot_attention_iter_factory: Optional[AbsIterFactory],
             trainer_options: TrainerOptions,
+            rng_key_names: Sequence[str],
             distributed_option: DistributedOption,
     ) -> None:
 
@@ -187,8 +189,8 @@ class Trainer:
         else:
             train_summary_writer = valid_summary_writer = None
 
-        jitted_train_step = jax.jit(train_step)
-        jitted_eval_step = jax.jit(pre_eval_step, static_argnames='apply_fn')
+        jitted_train_step = jax.jit(partial(train_step, rng_key_names=rng_key_names))
+        jitted_eval_step = jax.jit(partial(pre_eval_step, apply_fn=state.apply_fn))
         jitted_get_attention_weight_step = jax.jit(
             partial(get_attention_weight_step, apply_fn=state.apply_fn)
         )
@@ -235,7 +237,6 @@ class Trainer:
                     jitted_eval_step,
                     state.params,
                     evaluator,
-                    state.apply_fn,
                     valid_iter_factory.build_iter(iepoch),
                     sub_reporter,
                     trainer_options
@@ -423,7 +424,6 @@ class Trainer:
             pre_eval_step: Callable,
             params: FrozenDict,
             evaluator: Callable,
-            apply_fn: Callable,
             iterator: Iterable[Dict[str, np.ndarray]],
             reporter: SubReporter,
             options: TrainerOptions,
@@ -437,7 +437,7 @@ class Trainer:
         for (utt_id, batch) in iterator:
             if no_forward_run:
                 continue
-            retval = pre_eval_step(params, batch, apply_fn)
+            retval = pre_eval_step(params, batch)
             retval = jax.device_get(retval)
             loss, stats, weight, aux = retval  # TODO: currently not using intermediates!
 
