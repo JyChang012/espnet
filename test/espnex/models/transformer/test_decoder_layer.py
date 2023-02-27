@@ -19,12 +19,12 @@ from espnex.models.utils import make_pad_mask
 @mark.parametrize('concat_after', [True, False])
 @mark.parametrize('normalize_before', [True, False])
 def test_decoder_layer_train_mode(normalize_before, concat_after):
-    self_attn = MultiHeadDotProductAttention(num_heads=4, deterministic=False)
-    src_attn = MultiHeadDotProductAttention(num_heads=4, deterministic=False)
-    ff = PositionwiseFeedForward(hidden_units=512, dropout_rate=.5, deterministic=False)
+    self_attn = MultiHeadDotProductAttention(num_heads=4)
+    src_attn = MultiHeadDotProductAttention(num_heads=4)
+    ff = PositionwiseFeedForward(hidden_units=512, dropout_rate=.5)
 
     decoder = DecoderLayer(self_attn, src_attn, ff, dropout_rate=.5, normalize_before=normalize_before,
-                           concat_after=concat_after, deterministic=False)
+                           concat_after=concat_after)
     keys = random.PRNGKey(0)
     keys = random.split(keys)
     in_shape = 3, 256, 64
@@ -43,8 +43,8 @@ def test_decoder_layer_train_mode(normalize_before, concat_after):
     enc_mask = ~make_pad_mask(enc_lens, 512)
     enc_dec_mask = make_attention_mask(decoder_le_mask, enc_mask)
 
-    variables = decoder.init(dict(zip(['dropout', 'params'], keys)), inp, encoded, decoder_mask, enc_dec_mask)
-    y = decoder.apply(variables, inp, encoded, decoder_mask, enc_dec_mask, rngs=dict(dropout=keys[0]))
+    variables = decoder.init(dict(zip(['dropout', 'params'], keys)), inp, encoded, True, decoder_mask, enc_dec_mask)
+    y = decoder.apply(variables, inp, encoded, False, decoder_mask, enc_dec_mask, rngs=dict(dropout=keys[0]))
     assert y.shape == (3, 256, 64)
 
 
@@ -52,12 +52,12 @@ def test_decoder_layer_train_mode(normalize_before, concat_after):
 @mark.parametrize('normalize_before', [True, False])
 def test_decoder_layer_inference_one_step(normalize_before, concat_after):
     """Test `decode` mode (single step inference mode)."""
-    self_attn = MultiHeadDotProductAttention(num_heads=4, decode=True, deterministic=False)
-    src_attn = MultiHeadDotProductAttention(num_heads=4, deterministic=False)
-    ff = PositionwiseFeedForward(hidden_units=512, dropout_rate=.5, deterministic=False)
+    self_attn = MultiHeadDotProductAttention(num_heads=4, decode=True)
+    src_attn = MultiHeadDotProductAttention(num_heads=4)
+    ff = PositionwiseFeedForward(hidden_units=512, dropout_rate=.5)
 
     decoder = DecoderLayer(self_attn, src_attn, ff, dropout_rate=.5, normalize_before=normalize_before,
-                           concat_after=concat_after, deterministic=False)
+                           concat_after=concat_after)
     keys = random.PRNGKey(0)
     keys = random.split(keys)
     decode_shape = 3, 256, 64
@@ -71,7 +71,7 @@ def test_decoder_layer_inference_one_step(normalize_before, concat_after):
     enc_mask = ~make_pad_mask(enc_lens, 512)  # bs, enc_len
     cross_attn_mask = jnp.expand_dims(enc_mask, [1, 2])  # bs, 1, 1, enc_len
 
-    variables = decoder.init(dict(zip(['dropout', 'params'], keys)), jnp.empty(decode_shape), encoded)
+    variables = decoder.init(dict(zip(['dropout', 'params'], keys)), jnp.empty(decode_shape), encoded, False)
 
     cache = variables['cache']
     params = variables['params']
@@ -87,7 +87,7 @@ def test_decoder_layer_inference_one_step(normalize_before, concat_after):
     for _ in range(4):
         x, updated_vars = decoder.apply(
             dict(params=params, cache=cache),
-            x, encoded, None, cross_attn_mask,
+            x, encoded, False, None, cross_attn_mask,
             mutable='cache',
             rngs=dict(dropout=keys[0])
         )

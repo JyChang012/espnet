@@ -11,9 +11,9 @@ from espnex.models.transformer.positionwise_feed_forward import PositionwiseFeed
 
 
 def test_encoder_layer():
-    def get_model(d=False):
-        attn = MultiHeadDotProductAttention(num_heads=4, dropout_rate=0.5, deterministic=d)
-        ffn = PositionwiseFeedForward(256, 0.5, deterministic=d)
+    def get_model():
+        attn = MultiHeadDotProductAttention(num_heads=4, dropout_rate=0.5)
+        ffn = PositionwiseFeedForward(256, 0.5)
         model = EncoderLayer(attn, ffn, 0.5, stochastic_depth_rate=0.5)
         return model
     model = get_model()
@@ -27,7 +27,7 @@ def test_encoder_layer():
     variables = model.init(rngs, x, mask, None, False)
 
     def apply(vars, x, mask, rngs, deterministic):
-        return get_model(deterministic).apply(vars, x, mask, None, deterministic, rngs=rngs)
+        return model.apply(vars, x, mask, None, deterministic, rngs=rngs)
 
     apply = jax.jit(apply, static_argnames="deterministic")
 

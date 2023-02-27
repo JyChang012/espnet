@@ -1,5 +1,6 @@
 from functools import partial
 from typing import Optional, Callable, Any
+from inspect import signature
 
 import jax.numpy as jnp
 from jax import Array
@@ -36,19 +37,19 @@ def make_pad_mask(  # a simplified version of the torch one, support JIT compila
     return mask
 
 
-def inject_args(f: Callable, *args: Any, **kwargs: Any) -> Callable:
+def inject_args(f: Callable,
+                *args: Any,
+                filter_none: bool = True,
+                inspect: bool = True,
+                **kwargs: Any) -> Callable:
     """
-    Inject not-None keyword arguments to callable. Mainly used to reduce boilerplate code for initializing submodule.
-    Args:
-        f: Callable
-        *args: Any
-        **kwargs: Any
-
-    Returns:
-        Callable with additional args passed by default.
-
+    Similar to `functools.partial`, but with additional checks on parameters.
     """
-    kwargs = {k: v for k, v in kwargs.items() if v is not None}
+    sig = signature(f)
+    kwargs = {k: v for k, v in kwargs.items()
+              if ((not filter_none) or v is not None)
+              and
+              ((not inspect) or k in sig.parameters)}
     return partial(f, *args, **kwargs) if kwargs or args else f
 
 

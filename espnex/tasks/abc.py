@@ -83,6 +83,11 @@ class AbsTask(ABC):
     def __init__(self):
         raise RuntimeError("This class can't be instantiated.")
 
+    # override this method if additional rng keys are needed.
+    @classmethod
+    def get_rng_key_names(cls) -> Sequence[str]:
+        return 'dropout',
+
     @classmethod
     @abstractmethod
     def add_task_arguments(cls, parser: argparse.ArgumentParser):
@@ -1053,6 +1058,7 @@ class AbsTask(ABC):
                 evaluator,
                 plot_attention_iter_factory,
                 trainer_options,
+                cls.get_rng_key_names(),
                 distributed_option
             )
 

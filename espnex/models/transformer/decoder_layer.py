@@ -21,16 +21,15 @@ class DecoderLayer(Module):
     normalize_before: bool = True
     concat_after: bool = False
     kernel_init: Optional[Initializer] = None
-    deterministic: Optional[bool] = None
 
     @compact
     def __call__(
             self,
             inputs: Array,
             encoded: Array,
+            deterministic: bool,
             self_attention_mask: Optional[Array] = None,
             cross_attention_mask: Optional[Array] = None,
-            deterministic: Optional[bool] = None
     ) -> Array:
         """
         Args:
@@ -48,8 +47,6 @@ class DecoderLayer(Module):
             `decode` mode
 
         """
-        deterministic = merge_param('deterministic', deterministic, self.deterministic)
-
         x = inputs
         residual = x
         if self.normalize_before:
@@ -58,7 +55,7 @@ class DecoderLayer(Module):
         feat_size = inputs.shape[-1]
 
         def attn(inp_q, inp_kv, mask, attn_func):
-            out = attn_func(inp_q, inp_kv, mask)
+            out = attn_func(inp_q, inp_kv, mask, deterministic=deterministic)
             if self.concat_after:
                 out = jnp.concatenate((x, out), axis=-1)
                 dense = inject_args(Dense, kernel_init=self.kernel_init)
@@ -85,7 +82,9 @@ class DecoderLayer(Module):
         residual = x
         if self.normalize_before:
             x = LayerNorm()(x)
-        x = residual + Dropout(self.dropout_rate, deterministic=deterministic)(self.feed_forward(x))
+        x = residual + Dropout(self.dropout_rate,
+                               deterministic=deterministic)(self.feed_forward(x,
+                                                                              deterministic=deterministic))
         if not self.normalize_before:
             x = LayerNorm()(x)
 
