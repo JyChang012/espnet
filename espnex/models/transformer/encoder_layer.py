@@ -89,6 +89,9 @@ class EncoderLayer(Module):
 
         dense = inject_args(Dense, kernel_init=self.kernel_init)
 
+        inject_det = partial(inject_args, deterministic=deterministic)
+        self_attn, feed_forward = map(inject_det, (self.self_attn, self.feed_forward))
+
         residual = x
         if self.normalize_before:
             x = LayerNorm()(x)
@@ -98,13 +101,13 @@ class EncoderLayer(Module):
 
         if self.concat_after:
             x_concat = jnp.concatenate(
-                (x, self.self_attn(x_q, x, mask)), axis=-1
+                (x, self_attn(x_q, x, mask)), axis=-1
             )
             x = residual + stoch_layer_coeff * dense(x.shape[-1])(x_concat)
         else:
             x = residual + stoch_layer_coeff * Dropout(
                 self.dropout_rate, deterministic=deterministic
-            )(self.self_attn(x_q, x, mask))
+            )(self_attn(x_q, x, mask))
 
         if not self.normalize_before:
             x = LayerNorm()(x)
@@ -114,7 +117,7 @@ class EncoderLayer(Module):
             x = LayerNorm()(x)
         x = residual + stoch_layer_coeff * Dropout(
             self.dropout_rate, deterministic=deterministic
-        )(self.feed_forward(x))
+        )(feed_forward(x))
         if not self.normalize_before:
             x = LayerNorm()(x)
 

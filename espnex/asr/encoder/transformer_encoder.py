@@ -102,7 +102,6 @@ class TransformerEncoder(AbsEncoder):
         pos_enc_layer = self.pos_enc_type(
             self.positional_dropout_rate,
             init_type="espnet",
-            deterministic=deterministic,
         )
         if self.input_layer == "linear":
             xs_pad = Sequential(
@@ -146,7 +145,6 @@ class TransformerEncoder(AbsEncoder):
                 self.dropout_rate,
                 nn.relu,
                 self.kernel_init,
-                deterministic,
             )
         elif self.positionwise_layer_type in ("conv1d", 'conv1d-linear'):
             if self.positionwise_layer_type == 'conv1d':
@@ -158,7 +156,6 @@ class TransformerEncoder(AbsEncoder):
                 self.positionwise_conv_kernel_size,
                 self.dropout_rate,
                 self.kernel_init,
-                deterministic,
             )
         else:
             raise NotImplementedError("Support only linear or conv1d.")
@@ -172,16 +169,14 @@ class TransformerEncoder(AbsEncoder):
                     qkv_features=self.output_size,
                     out_features=self.output_size,
                     dropout_rate=self.attention_dropout_rate,
-                    deterministic=deterministic,
                     name=f'attention_{layer_idx}'),
                 positionwise_layer(),
                 self.dropout_rate,
                 self.normalize_before,
                 self.concat_after,
                 kernel_init=self.kernel_init,
-                deterministic=deterministic,
             )
-            xs_pad, _ = encoder_layer(xs_pad, attn_masks, None)
+            xs_pad, _ = encoder_layer(xs_pad, attn_masks, None, deterministic=deterministic)
             # TODO: currently ignore interctc
 
         if self.normalize_before:
