@@ -6,7 +6,7 @@ from typing import Callable, Collection, Dict, List, Optional, Tuple, Any
 import jax
 import numpy as np
 from flax.core import FrozenDict
-from jax import Array
+from jax import Array, random
 from typeguard import check_argument_types, check_return_type
 from jax.nn.initializers import Initializer, glorot_uniform, glorot_normal, he_normal, he_uniform
 
@@ -16,8 +16,11 @@ from espnet2.utils.nested_dict_action import NestedDictAction
 from espnet2.text.phoneme_tokenizer import g2p_choices
 from espnet2.utils.types import float_or_none, int_or_none, str2bool, str_or_none
 from espnex.asr.ctc_model import CTCASRModel
+from espnex.asr.decoder.abc import AbsDecoder
+from espnex.asr.decoder.transformer_decoder import TransformerDecoder
 from espnex.asr.encoder.abc import AbsEncoder
 from espnex.asr.encoder.transformer_encoder import TransformerEncoder
+from espnex.asr.espnet_model import ESPnetASRModel
 from espnex.asr.frontend.abc import AbsFrontend
 from espnex.asr.frontend.default import DefaultFrontend
 from espnex.models.utils import inject_args
@@ -47,10 +50,12 @@ init_choices = dict(
 model_choices = ClassChoices(
     "model",
     classes=dict(
+        espnet=ESPnetASRModel,
         ctcasr=CTCASRModel,
+
     ),
     type_check=AbsESPnetModel,
-    default="ctcasr",
+    default="espnet",
 )
 
 encoder_choices = ClassChoices(
@@ -62,6 +67,15 @@ encoder_choices = ClassChoices(
     default="transformer",
 )
 
+decoder_choices = ClassChoices(
+    "decoder",
+    classes=dict(
+        transformer=TransformerDecoder,
+    ),
+    type_check=AbsDecoder,
+    default="transformer",
+    optional=True,  # TODO: optional decoder
+)
 
 
 class ASRTask(AbsTask):
@@ -77,6 +91,8 @@ class ASRTask(AbsTask):
         # --preencoder and --preencoder_conf
         # --encoder and --encoder_conf
         encoder_choices,
+        # --decoder and --decoder_conf
+        decoder_choices,
         # --preprocessor and --preprocessor_conf
         preprocessor_choices,
     ]
@@ -304,7 +320,9 @@ class ASRTask(AbsTask):
 
     @classmethod
     def build_model(
-            cls, args: argparse.Namespace
+            cls,
+            args: argparse.Namespace,
+            rng: random.PRNGKey,
     ) -> Tuple[AbsESPnetModel, FrozenDict, str, Callable[..., Dict[str, Any]]]:
         assert check_argument_types()
 
@@ -361,17 +379,39 @@ class ASRTask(AbsTask):
         #     postencoder = None
 
         # 5. Decoder
+        decoder = None
+        if getattr(args, "decoder", None) is not None:
+            decoder_class = decoder_choices.get_class(args.decoder)
+            # TODO: Add RNN-T
+            decoder = decoder_class(
+                vocab_size=vocab_size,
+                encoder_output_size=encoder.output_size,  # TODO: use @compact style decoder
+                kernel_init=initializer,
+                **args.decoder_conf,
+            )
+
+
         # 7. Build model
         # try:
         #     model_class = model_choices.get_class(args.model)
         # except AttributeError:
         #     model_class = model_choices.get_class("espnet")
-        model = CTCASRModel(
+        try:
+            model_class = model_choices.get_class(args.model)
+        except AttributeError:
+            model_class = model_choices.get_class("espnet")
+        sos_eos_id = token_list.index("<sos/eos>")
+        model = inject_args(
+            model_class,
             vocab_size=vocab_size,
             frontend=frontend,
             encoder=encoder,
-            kernel_init=initializer
-        )
+            decoder=decoder,
+            kernel_init=initializer,
+            sos_id=sos_eos_id,
+            eos_id=sos_eos_id,
+            **args.model_conf
+        )()
 
         # 8. Initialize
 
@@ -380,10 +420,7 @@ class ASRTask(AbsTask):
         speech_lengths = np.array([2048])
         text = np.ones([1, 128], dtype='int')
         text_lengths = np.array([128])
-        rng = args.seed  # FIXME(Jiayu): manage seed used in different place!
-        rng = jax.random.PRNGKey(rng)
-        rng = jax.random.split(rng, 3)
-        rng = dict(zip(["skip_layer", "dropout", "params"], rng))
+        rng = dict(params=rng)
         # TODO: currently hardcode names of required RNG names, might need modifications later
         variables = jax.jit(partial(model.init, training=False))(
             rng, speech, speech_lengths, text, text_lengths

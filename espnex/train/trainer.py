@@ -3,6 +3,7 @@ import argparse
 import dataclasses
 import logging
 import time
+from collections import defaultdict
 from contextlib import contextmanager
 from dataclasses import is_dataclass
 from functools import partial
@@ -233,7 +234,7 @@ class Trainer:
                 all_steps_are_invalid = new_state is None
 
             with reporter.observe('valid') as sub_reporter:
-                indices, decoded, ref = cls.validate_one_epoch(
+                results = cls.validate_one_epoch(
                     jitted_eval_step,
                     state.params,
                     evaluator,
@@ -244,10 +245,11 @@ class Trainer:
 
                 p = output_dir / 'val_decoded' / f'ep{iepoch}'
                 p.parent.mkdir(parents=True, exist_ok=True)
-                to_write = zip(indices, ref, decoded)
+                to_write = zip(*results.values())
                 to_write = map(lambda x: '\n'.join(x), to_write)
                 to_write = '\n\n'.join(to_write)
                 with open(p, 'w') as f:
+                    f.write(f'Header: {" ".join(results.keys())}\n\n\n')
                     f.write(to_write)
 
             if plot_attention_iter_factory is not None:
@@ -431,9 +433,7 @@ class Trainer:
         ngpu = options.ngpu
         no_forward_run = options.no_forward_run
 
-        indices = []
-        decoded = []
-        ref = []
+        results = defaultdict(list)
         for (utt_id, batch) in iterator:
             if no_forward_run:
                 continue
@@ -442,16 +442,16 @@ class Trainer:
             loss, stats, weight, aux = retval  # TODO: currently not using intermediates!
 
             # *retval, _ = retval
-            stats, dec, text_str = evaluator(*retval)
+            stats, aux = evaluator(*retval)
 
-            indices.extend(utt_id)
-            decoded.extend(dec)
-            ref.extend(text_str)
+            results['indices'].extend(utt_id)
+            for k, v in aux.items():
+                results[k].extend(v)
 
             reporter.register(stats, weight)
             reporter.next()
 
-        return indices, decoded, ref
+        return results
 
     @classmethod
     def plot_attention(

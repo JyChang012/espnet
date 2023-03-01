@@ -28,8 +28,8 @@ def common_collate_fn(
     float_pad_value: Union[float, int] = 0.0,
     int_pad_value: int = -32768,
     not_sequence: Collection[str] = (),
-    pad_length_to_power_of_2: bool = True,
-    pad_batch_to_power_of_2: bool = True,
+    pad_length_to_pow2: bool = True,
+    pad_batch_to_pow2: bool = True,
 ) -> Tuple[List[str], Dict[str, np.ndarray]]:
     """Concatenate ndarray-list to an array and convert to JAX Array.
 
@@ -73,12 +73,12 @@ def common_collate_fn(
         # Assume the first axis is length:
         # Batch x (Length, ...)
         bsize = len(array_list)
-        if pad_batch_to_power_of_2:
+        if pad_batch_to_pow2:
             bsize = 2 ** ceil(log2(bsize))
 
         maxlen = max(arr.shape[0] for arr in array_list)
 
-        if pad_length_to_power_of_2:
+        if pad_length_to_pow2:
             maxlen = 2 ** ceil(log2(maxlen))
 
         suffix_shape = list(array_list[0].shape[1:])

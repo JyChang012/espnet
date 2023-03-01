@@ -159,7 +159,8 @@ class AbsTask(ABC):
     @classmethod
     @abstractmethod
     def build_model(
-            cls, args: argparse.Namespace
+            cls, args: argparse.Namespace,
+            rng: random.PRNGKey
     ) -> Tuple[AbsESPnetModel, FrozenDict, str, Callable[..., Dict[str, Any]]]:
         """Build model, init variables and generate model tabular representation."""
         raise NotImplementedError
@@ -930,7 +931,8 @@ class AbsTask(ABC):
         # TODO: add cmd flags for verbosity level and diagnostic mode
 
         # 2. Build model
-        model, variables, tabular_repr, evaluator = cls.build_model(args=args)
+        jax_key, key = random.split(jax_key)
+        model, variables, tabular_repr, evaluator = cls.build_model(args=args, rng=key)
         assert isinstance(model, AbsESPnetModel), f"model must inherit {AbsESPnetModel.__name__}, but got {type(model)}"
         # Note (Jiayu): all JAX operations are executed by the default device
         # which is accelerator (like TPU, GPU) if present
@@ -1049,12 +1051,13 @@ class AbsTask(ABC):
 
             # 9. Start training
             # TODO: support wandb
+            jax_key, key = random.split(jax_key)
             trainer_options = cls.trainer.build_options(args)
             cls.trainer.run(
                 state,
                 train_iter_factory,
                 valid_iter_factory,
-                jax_key,
+                key,
                 evaluator,
                 plot_attention_iter_factory,
                 trainer_options,

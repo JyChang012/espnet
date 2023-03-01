@@ -7,7 +7,7 @@ from jax import Array
 
 
 def make_pad_mask(  # a simplified version of the torch one, support JIT compilation.
-    lengths: Array, maxlen: int, axis: int = -1
+        lengths: Array, maxlen: int, axis: int = -1
 ) -> Array:
     """Make mask tensor containing indices of padded part. Padded part is 1, others are zero. An additional dimension of
      length `maxlen` is inserted at `axis` position, indicating padding.
@@ -37,6 +37,28 @@ def make_pad_mask(  # a simplified version of the torch one, support JIT compila
     return mask
 
 
+def shift_right(x: Array,
+                value: float,
+                axis: int = 1):
+    """Shift the input to the right by padding on axis 1."""
+    pad_widths = [(0, 0)] * len(x.shape)
+    pad_widths[axis] = (1, 0)
+    padded = jnp.pad(
+        x, pad_widths, mode='constant', constant_values=x.dtype.type(value))
+    return padded[:, :-1]
+
+
+def shift_left(x: Array,
+                value: float,
+                axis: int = 1):
+    """Shift the input to the right by padding on axis 1."""
+    pad_widths = [(0, 0)] * len(x.shape)
+    pad_widths[axis] = (0, 1)
+    padded = jnp.pad(
+        x, pad_widths, mode='constant', constant_values=x.dtype.type(value))
+    return padded[:, 1:]
+
+
 def inject_args(f: Callable,
                 *args: Any,
                 filter_none: bool = True,
@@ -51,5 +73,3 @@ def inject_args(f: Callable,
               and
               ((not inspect) or k in sig.parameters)}
     return partial(f, *args, **kwargs) if kwargs or args else f
-
-
