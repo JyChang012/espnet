@@ -401,7 +401,7 @@ class Trainer:
             '''
 
             # TODO: measure compile / forward / backward time separately
-            with reporter.measure_time('step_time'):
+            with reporter.measure_time('train_step_time'):
                 state, *others = train_step(
                     state,
                     batch,
@@ -410,6 +410,8 @@ class Trainer:
                 others = jax.device_get(others)
             stats, weight = others
             reporter.register(stats, weight)
+            reporter.register(dict(train_time=time.perf_counter() - start_time))
+            start_time = time.perf_counter()
 
             reporter.next()
             if iiter % log_interval == 0:

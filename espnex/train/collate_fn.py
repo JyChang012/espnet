@@ -2,7 +2,6 @@ from typing import Collection, Dict, List, Tuple, Union
 from math import log2, ceil
 
 import numpy as np
-import torch
 from typeguard import check_argument_types, check_return_type
 
 from espnet2.train.collate_fn import CommonCollateFn as TorchCollateFn
@@ -57,7 +56,11 @@ def common_collate_fn(
         not k.endswith("_lengths") for k in data_list[0]
     ), f"*_lengths is reserved: {list(data_list[0])}"
 
-    array_dict = {}
+    bsize = len(data)
+    if pad_batch_to_pow2:
+        bsize = 2 ** ceil(log2(bsize))
+
+    array_dict = dict()
     for key in data_list[0]:
         # NOTE(kamo):
         # Each models, which accepts these values finally, are responsible
@@ -65,26 +68,23 @@ def common_collate_fn(
         pad_value: Union[int, float]
         if data_list[0][key].dtype.kind == "i":
             pad_value = int_pad_value
+            dtype = np.int32  # JAX use 32 bit int / float by default
         else:
             pad_value = float_pad_value
+            dtype = np.float32
 
-        array_list = [d[key] for d in data_list]
+        array_list = [d[key].astype(dtype) for d in data_list]
 
         # Assume the first axis is length:
         # Batch x (Length, ...)
-        bsize = len(array_list)
-        if pad_batch_to_pow2:
-            bsize = 2 ** ceil(log2(bsize))
 
-        maxlen = max(arr.shape[0] for arr in array_list)
-
+        lengths = np.array([arr.shape[0] for arr in array_list], dtype=np.int32)
+        maxlen = np.max(lengths)
         if pad_length_to_pow2:
             maxlen = 2 ** ceil(log2(maxlen))
 
-        suffix_shape = list(array_list[0].shape[1:])
-        dtype = array_list[0].dtype
-        array = np.empty([bsize, maxlen] + suffix_shape, dtype=dtype)
-        array.fill(pad_value)
+        suffix_shape = tuple(array_list[0].shape[1:])
+        array = np.full((bsize, maxlen) + suffix_shape, pad_value, dtype=dtype)
         for i, arr in enumerate(array_list):
             le = arr.shape[0]
             array[i, :le] = arr
@@ -93,11 +93,13 @@ def common_collate_fn(
 
         # lens: (Batch,)
         if key not in not_sequence:
-            lens = np.zeros(bsize, dtype=int)
-            for i, d in enumerate(data_list):
-                lens[i] = d[key].shape[0]
+            lens = lengths
+            real_bsize = lens.shape[0]
+            if bsize > real_bsize:
+                lens = np.zeros(bsize, dtype=np.int32)
+                lens[:real_bsize] = lengths
             array_dict[key + "_lengths"] = lens
-
     out = (uttids, array_dict)
     assert check_return_type(out)
     return out
+
