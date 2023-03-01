@@ -402,13 +402,13 @@ class Trainer:
 
             # TODO: measure compile / forward / backward time separately
             with reporter.measure_time('step_time'):
-                ret = train_step(
+                state, *others = train_step(
                     state,
                     batch,
                     rng_key
                 )
-            ret = jax.device_get(ret)
-            state, stats, weight = ret
+                others = jax.device_get(others)
+            stats, weight = others
             reporter.register(stats, weight)
 
             reporter.next()
