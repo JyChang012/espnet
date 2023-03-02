@@ -243,14 +243,15 @@ class Trainer:
                     trainer_options
                 )
 
-                p = output_dir / 'val_decoded' / f'ep{iepoch}'
-                p.parent.mkdir(parents=True, exist_ok=True)
-                to_write = zip(*results.values())
-                to_write = map(lambda x: '\n'.join(x), to_write)
-                to_write = '\n\n'.join(to_write)
-                with open(p, 'w') as f:
-                    f.write(f'Header: {" ".join(results.keys())}\n\n\n')
-                    f.write(to_write)
+                if results:
+                    p = output_dir / 'val_decoded' / f'ep{iepoch}'
+                    p.parent.mkdir(parents=True, exist_ok=True)
+                    to_write = zip(*results.values())
+                    to_write = map(lambda x: '\n'.join(x), to_write)
+                    to_write = '\n\n'.join(to_write)
+                    with open(p, 'w') as f:
+                        f.write(f'Header: {" ".join(results.keys())}\n\n\n')
+                        f.write(to_write)
 
             if plot_attention_iter_factory is not None:
                 with reporter.observe("att_plot") as sub_reporter:
@@ -432,11 +433,12 @@ class Trainer:
             iterator: Iterable[Dict[str, np.ndarray]],
             reporter: SubReporter,
             options: TrainerOptions,
+            return_aux: bool = False
     ):
         ngpu = options.ngpu
         no_forward_run = options.no_forward_run
 
-        results = defaultdict(list)
+        results = return_aux and defaultdict(list)
         for (utt_id, batch) in iterator:
             if no_forward_run:
                 continue
@@ -447,9 +449,10 @@ class Trainer:
             # *retval, _ = retval
             stats, aux = evaluator(*retval)
 
-            results['indices'].extend(utt_id)
-            for k, v in aux.items():
-                results[k].extend(v)
+            if return_aux:
+                results['indices'].extend(utt_id)
+                for k, v in aux.items():
+                    results[k].extend(v)
 
             reporter.register(stats, weight)
             reporter.next()
