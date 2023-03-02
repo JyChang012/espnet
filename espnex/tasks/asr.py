@@ -392,10 +392,6 @@ class ASRTask(AbsTask):
 
 
         # 7. Build model
-        # try:
-        #     model_class = model_choices.get_class(args.model)
-        # except AttributeError:
-        #     model_class = model_choices.get_class("espnet")
         try:
             model_class = model_choices.get_class(args.model)
         except AttributeError:

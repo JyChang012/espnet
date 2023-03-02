@@ -401,6 +401,7 @@ class Trainer:
             '''
 
             # TODO: measure compile / forward / backward time separately
+            # TODO: record learning rates and upload to tensorboard
             with reporter.measure_time('train_step_time'):
                 state, *others = train_step(
                     state,
