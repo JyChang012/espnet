@@ -1,3 +1,4 @@
+import logging
 from functools import partial
 from typing import Callable, Optional, Tuple, Union, Type, Literal, Any
 
@@ -35,6 +36,7 @@ class TransformerDecoder(AbsDecoder):
     normalize_before: bool = True
     concat_after: bool = False
     layer_drop_rate: float = 0.0
+    weight_tying: bool = False
     kernel_init: Optional[Initializer] = None
 
     def setup(self) -> None:
@@ -65,7 +67,13 @@ class TransformerDecoder(AbsDecoder):
         if self.normalize_before:
             self.after_norm = LayerNorm()
         if self.use_output_layer:
-            self.output_layer = dense(self.vocab_size)
+            if self.weight_tying:
+                assert self.input_layer == 'embed', "To use weight typing, input_layer must be `embed`!"
+                if self.is_initializing():
+                    logging.info(f'TransformerDecoder: {self.name} is using weight tying.')
+                self.output_layer = self.embed.layers[0].attend
+            else:
+                self.output_layer = dense(self.vocab_size)
 
         self.decoders = StochasticSequential(
             tuple(
