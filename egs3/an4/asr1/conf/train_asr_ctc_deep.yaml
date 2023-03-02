@@ -11,6 +11,7 @@ best_model_criterion:
     - max
 keep_nbest_models: 5
 num_att_plot: 0
+num_workers: 1
 
 encoder: transformer
 encoder_conf:
@@ -24,19 +25,8 @@ encoder_conf:
     input_layer: conv2d
     normalize_before: true
 
-decoder: transformer
-decoder_conf:
-    attention_heads: 4
-    linear_units: 2048
-    num_blocks: 6
-    dropout_rate: 0.1
-    positional_dropout_rate: 0.1
-    self_attention_dropout_rate: 0.0
-    src_attention_dropout_rate: 0.0
-
+model: ctcasr
 model_conf:
-    ctc_weight: 0.3
-    lsm_weight: 0.1
     length_normalized_loss: false
 
 optim: adam
