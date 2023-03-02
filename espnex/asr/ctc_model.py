@@ -1,15 +1,12 @@
 from typing import Sequence, Optional, Any, Tuple, Dict, Callable, Union, List
 import logging
 
-import flax.linen as nn
 import numpy as np
-from flax.linen import Module, Dense
-from jax import Array, device_get
-from flax.struct import PyTreeNode
+from flax.linen import Dense
+from jax import Array, tree_map
 from optax import ctc_loss
 import jax.numpy as jnp
 from numpy import ndarray
-import jax
 from jax.nn.initializers import Initializer, glorot_uniform
 
 from espnex.asr.encoder.abc import AbsEncoder
@@ -54,6 +51,9 @@ class CTCASRModel(AbsESPnetModel):
             *args: Any,
             **kwargs: Any,
     ) -> Tuple[Array, Dict[str, Any], float, Tuple[Array, Array, Array, Array]]:
+        batch_size = (speech_lengths > 0) | (text_lengths > 0)
+        batch_size = jnp.sum(batch_size)
+
         enc_out, enc_out_lengths = self.encode(speech, speech_lengths, training)
         enc_out = self.out_dense(enc_out)
         enc_padded_mask = make_pad_mask(enc_out_lengths, enc_out.shape[1])
@@ -64,8 +64,7 @@ class CTCASRModel(AbsESPnetModel):
         # enc_padded_mask = enc_padded_mask.astype('float')
         text_padded_mask = make_pad_mask(text_lengths, text.shape[1])
         losses = ctc_loss(enc_out, enc_padded_mask, text, text_padded_mask)  # (bs,)
-        loss = jnp.mean(losses)
-        batch_size = speech.shape[0]
+        loss = jnp.sum(losses) / batch_size
 
         arg_max_enc_out = jnp.argmax(enc_out, axis=-1)
         decoded, decoded_length = ctc_decode(arg_max_enc_out, enc_out_lengths, self.blank_id, self.ignore_id)
@@ -141,6 +140,11 @@ class CTCASRModel(AbsESPnetModel):
                 return_decoded: Optional[bool] = False
         ) -> Dict[str, Any]:
 
+            def truncate(arr):
+                return arr[:weight]
+
+            aux = tree_map(truncate, aux)
+
             decoded, decoded_length, text, text_lengths = aux
 
             decoded = decoded[:, :np.max(decoded_length)]
@@ -160,7 +164,8 @@ class CTCASRModel(AbsESPnetModel):
                 cer=cer,
             ))
             if return_decoded:
-                return stats, decoded_str, text_str
+                return stats, dict(decoded_str=decoded_str,
+                                   text_str=text_str)
 
             return stats
         return evaluate

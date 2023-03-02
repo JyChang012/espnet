@@ -73,9 +73,10 @@ class ESPnetASRModel(AbsESPnetModel):
         assert 0 <= self.ctc_weight <= 1., 'CTC weight needs to be within [0, 1]!'
         if self.ctc_weight < 1.:
             assert self.decoder is not None, "Decoder should not be None when attention is used"
-        else:
-            self.decoder = None
-            logging.warning("Set decoder to none as ctc_weight==1.0")
+        elif self.is_initializing() and self.decoder is not None:
+            logging.warning(
+                "ctc_weight == 1.0 but self.decoder is not None. Weights of decoder will not be initialized!"
+            )
         reduction = 'mean' if self.length_normalized_loss else 'sum'
         self.criterion_att = LabelSmoothingLoss(smoothing=self.lsm_weight, reduction=reduction)
 
@@ -101,15 +102,16 @@ class ESPnetASRModel(AbsESPnetModel):
         # 1. CTC branch
         # TODO: Note: we assume that there is an <sos> / <space> at the start of each `text`
         if self.ctc_weight != 0.:
-            loss_ctc = ctc_loss(enc_out,
+            ctc_logits = self.ctc_out_dense(enc_out)
+            loss_ctc = ctc_loss(ctc_logits,
                                 enc_padded_mask,
                                 text[:, 1:],
                                 text_padded_mask[:, 1:],
                                 blank_id=self.blank_id)  # (bs,)
             loss_ctc = jnp.sum(loss_ctc) / bsize
 
-            arg_max_enc_out = jnp.argmax(enc_out, axis=-1)
-            ctc_decoded, ctc_decoded_lengths = ctc_decode(arg_max_enc_out,
+            arg_max_ctc_logits = jnp.argmax(ctc_logits, axis=-1)
+            ctc_decoded, ctc_decoded_lengths = ctc_decode(arg_max_ctc_logits,
                                                           enc_out_lengths,
                                                           self.blank_id,
                                                           self.ignore_id)
@@ -242,39 +244,28 @@ class ESPnetASRModel(AbsESPnetModel):
                               aux.targets,
                               aux.targets_lens)
 
-            ctc_decoded = ctc_decoded[:, :np.max(ctc_decoded_lens)]
-
             text_maxlen = np.max(text_lengths)
             text = text[:, :text_maxlen]
-            att_decoded = att_decoded[:, :text_maxlen]
-
-            ctc_decoded_str = convert2char(ctc_decoded, ctc_decoded_lens)
-            att_decoded_str = convert2char(att_decoded, text_lengths)
             text_str = convert2char(text, text_lengths)
 
-            '''
-            # filter out empty text_str
-            att_decoded_str, ctc_decoded_str, text_str = zip(
-                *((a, d, t) for a, d, t in zip(att_decoded_str, ctc_decoded_str, text_str) if t)
-            )
-            '''
+            decoded = dict(text_str=text_str)
+            if ctc_decoded is not None:
+                ctc_decoded = ctc_decoded[:, :np.max(ctc_decoded_lens)]
+                ctc_decoded_str = convert2char(ctc_decoded, ctc_decoded_lens)
+                stats['cer_ctc'] = error_calculator.calculate_cer(ctc_decoded_str, text_str)
+                stats['wer_ctc'] = error_calculator.calculate_wer(ctc_decoded_str, text_str)
+                decoded['ctc_decoded_str'] = ctc_decoded_str
 
-            cer_ctc = error_calculator.calculate_cer(ctc_decoded_str, text_str)
-            wer_ctc = error_calculator.calculate_wer(ctc_decoded_str, text_str)
-            wer = error_calculator.calculate_wer(att_decoded_str, text_str)
-            cer = error_calculator.calculate_cer(att_decoded_str, text_str)
+            if att_decoded is not None:
+                att_decoded = att_decoded[:, :text_maxlen]
+                att_decoded_str = convert2char(att_decoded, text_lengths)
+                stats['wer'] = error_calculator.calculate_wer(att_decoded_str, text_str)
+                stats['cer'] = error_calculator.calculate_cer(att_decoded_str, text_str)
+                decoded['att_decoded_str'] = att_decoded_str
 
-            stats.update(dict(
-                wer_ctc=wer_ctc,
-                cer_ctc=cer_ctc,
-                wer=wer,
-                cer=cer
-            ))
             if return_decoded:
                 # return stats, ctc_decoded_str, att_decoded_str, text_str
-                return stats, dict(text_str=text_str,
-                                   ctc_decoded_str=ctc_decoded_str,
-                                   att_decoded_str=att_decoded_str)
+                return stats, decoded
 
             return stats
 
