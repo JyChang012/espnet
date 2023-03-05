@@ -30,6 +30,8 @@ from espnex.asr.decoder.abc import AbsDecoder
 from espnex.train.abs_espnex_model import AbsESPnetModel
 from espnex.models.loss import LabelSmoothingLoss
 
+logger = logging.getLogger('ESPNex')
+
 
 class ESPnetASRModelOutputAux(PyTreeNode):
     ctc_decoded: Optional[Array]
@@ -74,7 +76,7 @@ class ESPnetASRModel(AbsESPnetModel):
         if self.ctc_weight < 1.:
             assert self.decoder is not None, "Decoder should not be None when attention is used"
         elif self.is_initializing() and self.decoder is not None:
-            logging.warning(
+            logger.warning(
                 "ctc_weight == 1.0 but self.decoder is not None. Weights of decoder will not be initialized!"
             )
         reduction = 'mean' if self.length_normalized_loss else 'sum'
@@ -190,7 +192,7 @@ class ESPnetASRModel(AbsESPnetModel):
             feats, feats_lengths = self._extract_feats(speech, speech_lengths, training)
         else:
             # Generate dummy stats if extract_feats_in_collect_stats is False
-            logging.warning(
+            logger.warning(
                 "Generating dummy stats for feats and feats_lengths, "
                 "because encoder_conf.extract_feats_in_collect_stats is "
                 f"{self.extract_feats_in_collect_stats}"

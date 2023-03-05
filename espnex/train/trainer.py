@@ -45,6 +45,8 @@ from espnet2.train.reporter import Reporter, SubReporter
 from espnet2.utils.build_dataclass import build_dataclass
 from espnet2.utils.kwargs2args import kwargs2args
 
+logger = logging.getLogger('ESPNex')
+
 ESPNetTrainState = TrainState  # might need more state
 
 
@@ -164,7 +166,7 @@ class Trainer:
             keep_nbest_models = [trainer_options.keep_nbest_models]
         else:
             if len(trainer_options.keep_nbest_models) == 0:
-                logging.warning("No keep_nbest_models is given. Change to [1]")
+                logger.warning("No keep_nbest_models is given. Change to [1]")
                 trainer_options.keep_nbest_models = [1]
             keep_nbest_models = trainer_options.keep_nbest_models
 
@@ -174,7 +176,7 @@ class Trainer:
         # TODO: support resume training, reported
         start_epoch = reporter.get_epoch() + 1
         if start_epoch == trainer_options.max_epoch + 1:
-            logging.warning(
+            logger.warning(
                 f"The training has already reached at max_epoch: {start_epoch}"
             )
 
@@ -202,7 +204,7 @@ class Trainer:
         start_time = time.perf_counter()
         for iepoch in range(start_epoch, trainer_options.max_epoch + 1):
             if iepoch != start_epoch:
-                logging.info(
+                logger.info(
                     "{}/{} epoch started. Estimated time to finish: {}".format(
                         iepoch,
                         trainer_options.max_epoch,
@@ -214,7 +216,7 @@ class Trainer:
                     )
                 )
             else:
-                logging.info(f"{iepoch}/{trainer_options.max_epoch} epoch started")
+                logger.info(f"{iepoch}/{trainer_options.max_epoch} epoch started")
             set_all_random_seed(trainer_options.seed + iepoch)
 
             reporter.set_epoch(iepoch)
@@ -267,7 +269,7 @@ class Trainer:
 
             # 3. Report the results
             # TODO: add wandb, etc
-            logging.info(reporter.log_message())
+            logger.info(reporter.log_message())
             if train_summary_writer is not None:
                 reporter.tensorboard_add_scalar(train_summary_writer, key1="train")
                 reporter.tensorboard_add_scalar(valid_summary_writer, key1="valid")
@@ -307,9 +309,9 @@ class Trainer:
                         p.symlink_to(f"params/params_{iepoch}")
                         _improved.append(f"{_phase}.{k}")
             if len(_improved) == 0:
-                logging.info("There are no improvements in this epoch")
+                logger.info("There are no improvements in this epoch")
             else:
-                logging.info(
+                logger.info(
                     "The best model has been updated: " + ", ".join(_improved)
                 )
             # TODO: wandb
@@ -333,11 +335,11 @@ class Trainer:
                     p.unlink()
                     _removed.append(str(p))
             if len(_removed) != 0:
-                logging.info("The model files were removed: " + ", ".join(_removed))
+                logger.info("The model files were removed: " + ", ".join(_removed))
 
             # 7. If any updating haven't happened, stops the training
             if all_steps_are_invalid:
-                logging.warning(
+                logger.warning(
                     "The gradients at all steps are invalid in this epoch. "
                     f"Something seems wrong. This training was stopped at {iepoch}epoch"
                 )
@@ -350,7 +352,7 @@ class Trainer:
                 ):
                     break
         else:
-            logging.info(
+            logger.info(
                 f"The training was finished at {trainer_options.max_epoch} epochs "
             )
 
@@ -417,7 +419,7 @@ class Trainer:
 
             reporter.next()
             if iiter % log_interval == 0:
-                logging.info(reporter.log_message(-log_interval))
+                logger.info(reporter.log_message(-log_interval))
                 if summary_writer is not None:
                     reporter.tensorboard_add_scalar(summary_writer, -log_interval)
                 if use_wandb:

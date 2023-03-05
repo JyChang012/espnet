@@ -52,6 +52,8 @@ from espnex.train.abs_espnex_model import AbsESPnetModel
 from espnex.schedulers import warmup_schedule
 from espnex.train.trainer import Trainer, ESPNetTrainState
 
+logger = logging.getLogger('ESPNex')
+
 optim_classes = dict(
     adam=adam,
     adamw=adamw,
@@ -914,11 +916,15 @@ class AbsTask(ABC):
 
         # 0. Set up logger
         _rank = 0  # TODO: distributed is not supported currently, rank is always 0
-        logging.basicConfig(
-            level=args.log_level,
-            format=f"[{os.uname()[1].split('.')[0]}{_rank}]"
-                   f" %(asctime)s (%(module)s:%(lineno)d) %(levelname)s: %(message)s",
-        )
+
+        # config logger
+        logger.setLevel(args.log_level)
+        handler = logging.StreamHandler()
+        handler.setLevel(logging.DEBUG)
+        formatter = logging.Formatter(f"[{os.uname()[1].split('.')[0]}{_rank}]"
+                                      f" %(asctime)s (%(module)s:%(lineno)d) %(levelname)s: %(message)s")
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
 
         # 1. set random seed
         set_all_random_seed(args.seed)  # TODO: is using the same seed for torch / JAX / numpy a good idea?
@@ -943,20 +949,20 @@ class AbsTask(ABC):
         optimizers = cls.build_optimizers(args)
 
         # 4. TODO: log model summary and libraries version
-        logging.info('Model structure:\n' + tabular_repr)
+        logger.info('Model structure:\n' + tabular_repr)
 
         # TODO: log schedulers
         idx: Any
         for idx, o in enumerate(optimizers, 1):
             if idx == 1:
                 idx = ''
-            logging.info(f"Optimizer{idx}:\n{o}")
+            logger.info(f"Optimizer{idx}:\n{o}")
 
         # 5. Dump "args" to config.yaml
         output_dir = Path(args.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         with (output_dir / "config.yaml").open("w", encoding="utf-8") as f:
-            logging.info(
+            logger.info(
                 f'Saving the configuration in {output_dir / "config.yaml"}'
             )
             yaml_no_alias_safe_dump(vars(args), f, indent=4, sort_keys=False)
@@ -964,7 +970,7 @@ class AbsTask(ABC):
         if args.dry_run:
             pass
         elif args.collect_stats:
-            logging.info(args)
+            logger.info(args)
             if args.valid_batch_size is None:
                 args.valid_batch_size = args.batch_size
 
@@ -1030,7 +1036,7 @@ class AbsTask(ABC):
             # attention plot iter factory
             if not args.use_matplotlib and args.num_att_plot != 0:
                 args.num_att_plot = 0
-                logging.info("--use_matplotlib false => Changing --num_att_plot to 0")
+                logger.info("--use_matplotlib false => Changing --num_att_plot to 0")
 
             if args.num_att_plot != 0:
                 plot_attention_iter_factory = cls.build_iter_factory(
@@ -1301,7 +1307,7 @@ class AbsTask(ABC):
                     "utt2category",
                 )
             )
-            logging.warning("Reading " + utt2category_file)
+            logger.warning("Reading " + utt2category_file)
         else:
             utt2category_file = None
         batch_sampler = build_batch_sampler(
@@ -1325,9 +1331,9 @@ class AbsTask(ABC):
 
         bs_list = [len(batch) for batch in batches]
 
-        logging.info(f"[{mode}] dataset:\n{dataset}")
-        logging.info(f"[{mode}] Batch sampler: {batch_sampler}")
-        logging.info(
+        logger.info(f"[{mode}] dataset:\n{dataset}")
+        logger.info(f"[{mode}] Batch sampler: {batch_sampler}")
+        logger.info(
             f"[{mode}] mini-batch sizes summary: N-batch={len(bs_list)}, "
             f"mean={np.mean(bs_list):.1f}, min={np.min(bs_list)}, max={np.max(bs_list)}"
         )
@@ -1383,7 +1389,7 @@ class AbsTask(ABC):
         batches = list(batch_sampler)
         if iter_options.num_batches is not None:
             batches = batches[: iter_options.num_batches]
-        logging.info(f"[{mode}] dataset:\n{dataset}")
+        logger.info(f"[{mode}] dataset:\n{dataset}")
 
         if iter_options.distributed:
             world_size = torch.distributed.get_world_size()

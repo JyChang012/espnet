@@ -29,6 +29,8 @@ from espnex.train.abs_espnex_model import AbsESPnetModel
 from espnex.train.collate_fn import CommonCollateFn
 from espnet2.tasks.asr import preprocessor_choices
 
+logger = logging.getLogger('ESPNex')
+
 
 frontend_choices = ClassChoices(
     name="frontend",
@@ -353,7 +355,7 @@ class ASRTask(AbsTask):
         else:
             raise RuntimeError("token_list must be str or list")
         vocab_size = len(token_list)
-        logging.info(f"Vocabulary size: {vocab_size }")
+        logger.info(f"Vocabulary size: {vocab_size }")
 
         initializer = init_choices.get(args.init, None)()
 
