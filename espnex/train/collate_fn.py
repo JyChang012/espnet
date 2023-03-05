@@ -4,12 +4,30 @@ from math import log2, ceil
 import numpy as np
 from typeguard import check_argument_types, check_return_type
 
-from espnet2.train.collate_fn import CommonCollateFn as TorchCollateFn
-from espnet.nets.pytorch_backend.nets_utils import pad_list
 
+class CommonCollateFn:
+    """Functor class of common_collate_fn()"""
 
-class CommonCollateFn(TorchCollateFn):
-    """Functor class of common_collate_fn(). Subclass from the torch version."""
+    def __init__(
+            self,
+            float_pad_value: Union[float, int] = 0.0,
+            int_pad_value: int = -32768,
+            not_sequence: Collection[str] = (),
+            pad_length_to_pow2: bool = True,
+            pad_batch_to_pow2: bool = True
+    ):
+        assert check_argument_types()
+        self.float_pad_value = float_pad_value
+        self.int_pad_value = int_pad_value
+        self.not_sequence = set(not_sequence)
+        self.pad_length_to_pow2 = pad_length_to_pow2
+        self.pad_batch_to_pow2 = pad_batch_to_pow2
+
+    def __repr__(self):
+        return (
+            f"{self.__class__}(float_pad_value={self.float_pad_value}, "
+            f"int_pad_value={self.float_pad_value})"
+        )
 
     def __call__(
         self, data: Collection[Tuple[str, Dict[str, np.ndarray]]]
@@ -19,6 +37,8 @@ class CommonCollateFn(TorchCollateFn):
             float_pad_value=self.float_pad_value,
             int_pad_value=self.int_pad_value,
             not_sequence=self.not_sequence,
+            pad_length_to_pow2=self.pad_length_to_pow2,
+            pad_batch_to_pow2=self.pad_batch_to_pow2
         )
 
 
@@ -27,8 +47,8 @@ def common_collate_fn(
     float_pad_value: Union[float, int] = 0.0,
     int_pad_value: int = -32768,
     not_sequence: Collection[str] = (),
-    pad_length_to_pow2: bool = True,
-    pad_batch_to_pow2: bool = True,
+    pad_length_to_pow2: bool = False,
+    pad_batch_to_pow2: bool = False,
 ) -> Tuple[List[str], Dict[str, np.ndarray]]:
     """Concatenate ndarray-list to an array and convert to JAX Array.
 

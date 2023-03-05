@@ -230,6 +230,19 @@ class ASRTask(AbsTask):
             help="If len(noise) / len(speech) is smaller than this threshold during "
             "dynamic mixing, a warning will be displayed.",
         )
+        group.add_argument(
+            "--pad_length_to_pow2",
+            type=str2bool,
+            default=True,
+            help="Whether to pad length dimension to nearest power of 2."
+        )
+
+        group.add_argument(
+            "--pad_batch_to_pow2",
+            type=str2bool,
+            default=True,
+            help="Whether to pad batch size dimension to nearest power of 2."
+        )
 
         for class_choices in cls.class_choices_list:
             # Append --<name> and --<name>_conf.
@@ -245,7 +258,10 @@ class ASRTask(AbsTask):
     ]:
         assert check_argument_types()
         # NOTE(kamo): int value = 0 is reserved by CTC-blank symbol
-        return CommonCollateFn(float_pad_value=0.0, int_pad_value=-1)
+        return CommonCollateFn(float_pad_value=0.0,
+                               int_pad_value=-1,
+                               pad_batch_to_pow2=args.pad_batch_to_pow2,
+                               pad_length_to_pow2=args.pad_length_to_pow2)
 
     @classmethod
     def build_preprocess_fn(
