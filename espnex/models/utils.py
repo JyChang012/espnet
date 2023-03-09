@@ -24,14 +24,11 @@ def make_pad_mask(  # a simplified version of the torch one, support JIT compila
         Tensor: Boolean mask array containing indices of padded part.
     """
     in_shape = lengths.shape
-    axis = len(in_shape) + 1 + axis if axis < 0 else axis
-    prefix_shape = in_shape[:axis]
-    suffix_shape = in_shape[axis:]
+    axis = (len(in_shape) + 1 + axis) if axis < 0 else axis
+    suffix_shape_len = len(in_shape) - axis
     lengths = jnp.expand_dims(lengths, axis=axis)  # (..., 1, ...)
-    out_shape = prefix_shape + (maxlen,) + suffix_shape
-    lengths = jnp.broadcast_to(lengths, out_shape)  # (..., maxlen, ...)
     mask = jnp.arange(maxlen)  # [0, 1, 2, ..., maxlen], (maxlen,)
-    mask = jnp.expand_dims(mask, [1 + i for i in range(len(suffix_shape))])  # (maxlen, ...)
+    mask = mask.reshape(tuple(mask.shape) + (1,) * suffix_shape_len)
     # (1, 1, ..., 1, maxlen, 1, ..., 1)
     mask = mask >= lengths  # (maxlen, ...) >= (..., 1, ...) -> (..., maxlen, ...)
     return mask

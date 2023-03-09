@@ -24,5 +24,6 @@ from espnex.models.utils import make_pad_mask
     ],
 )
 def test_make_pad_mask(lengths, maxlen, mask):
-    ret = make_pad_mask(lengths, maxlen)
+    jmake_pad_mask = jax.jit(make_pad_mask, static_argnames=('maxlen', 'axis'))
+    ret = jmake_pad_mask(lengths, maxlen)
     assert_equal(jax.device_get(ret), jax.device_get(mask))
