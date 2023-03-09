@@ -192,7 +192,9 @@ class Trainer:
         else:
             train_summary_writer = valid_summary_writer = None
 
-        jitted_train_step = jax.jit(partial(train_step, rng_key_names=rng_key_names))
+        jitted_train_step = jax.jit(partial(train_step, rng_key_names=rng_key_names),
+                                    donate_argnums=0)
+        # `state` is donated for internal computation. Can not reuse it
         jitted_eval_step = jax.jit(partial(pre_eval_step, apply_fn=state.apply_fn))
         jitted_get_attention_weight_step = jax.jit(
             partial(get_attention_weight_step, apply_fn=state.apply_fn)
@@ -435,12 +437,11 @@ class Trainer:
             iterator: Iterable[Dict[str, np.ndarray]],
             reporter: SubReporter,
             options: TrainerOptions,
-            return_aux: bool = False
     ):
         ngpu = options.ngpu
         no_forward_run = options.no_forward_run
 
-        results = return_aux and defaultdict(list)
+        results = defaultdict(list)
         for (utt_id, batch) in iterator:
             if no_forward_run:
                 continue
@@ -449,17 +450,20 @@ class Trainer:
             loss, stats, weight, aux = retval  # TODO: currently not using intermediates!
 
             # *retval, _ = retval
-            stats, aux = evaluator(*retval)
+            ret = evaluator(*retval, **batch)
 
-            if return_aux:
+            if isinstance(ret, Sequence):
+                stats, aux = ret
                 results['indices'].extend(utt_id)
                 for k, v in aux.items():
                     results[k].extend(v)
+            else:
+                stats = ret
 
             reporter.register(stats, weight)
             reporter.next()
 
-        return results
+        return results or None
 
     @classmethod
     def plot_attention(
