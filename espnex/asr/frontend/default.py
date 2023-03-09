@@ -9,7 +9,6 @@ from flax.linen import compact, merge_param
 from jax import Array
 
 from espnet2.utils.get_default_kwargs import get_default_kwargs
-from espnet.nets.pytorch_backend.frontends.frontend import Frontend
 from espnex.asr.frontend.abc import AbsFrontend
 from espnex.layers.log_mel import LogMel
 from espnex.layers.stft import Stft
