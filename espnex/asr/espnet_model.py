@@ -21,6 +21,7 @@ from espnet.nets.e2e_asr_common import ErrorCalculator
 from espnex.asr.ctc import ctc_decode
 from espnex.asr.encoder.abc import AbsEncoder
 from espnex.asr.frontend.abc import AbsFrontend
+from espnex.asr.utils import ASRErrorCalculator
 from espnex.models.utils import inject_args, make_pad_mask, shift_right, shift_left
 from espnex.models.transformer.decoder_layer import DecoderLayer
 from espnex.models.transformer.embedding import AddPositionalEncoding
@@ -34,11 +35,9 @@ logger = logging.getLogger('ESPNex')
 
 
 class ESPnetASRModelOutputAux(PyTreeNode):
-    ctc_decoded: Optional[Array]
-    ctc_decoded_lens: Optional[Array]
+    ctc_output: Optional[Array]
+    ctc_output_lengths: Optional[Array]
     attention_decoded: Optional[Array]  # same length as ground truth
-    targets: Array
-    targets_lens: Array
 
 
 class ESPnetASRModel(AbsESPnetModel):
@@ -53,7 +52,7 @@ class ESPnetASRModel(AbsESPnetModel):
     eos_id: int
     ignore_id: int = -1
     blank_id: int = 0
-    lang_token_id: int = -1
+    # lang_token_id: int = -1
 
     ctc_weight: float = 0.5
     lsm_weight: float = 0.0
@@ -66,8 +65,8 @@ class ESPnetASRModel(AbsESPnetModel):
     sym_eos: str = "<sos/eos>"
 
     length_normalized_loss: bool = False
-    report_cer: bool = True
-    report_wer: bool = True
+    # report_cer: bool = True
+    # report_wer: bool = True
     extract_feats_in_collect_stats: bool = True
     kernel_init: Optional[Initializer] = None
 
@@ -85,6 +84,9 @@ class ESPnetASRModel(AbsESPnetModel):
         dense = inject_args(Dense, kernel_init=self.kernel_init)
         self.ctc_out_dense = dense(self.vocab_size)
 
+        if self.is_initializing():
+            logger.info(str(self))
+
     def __call__(self,
                  speech: Array,
                  speech_lengths: Array,
@@ -92,35 +94,36 @@ class ESPnetASRModel(AbsESPnetModel):
                  text_lengths: Array,
                  training: bool,
                  **kwargs) -> Tuple[Array, Dict[str, Any], float, ESPnetASRModelOutputAux]:
+        batch_size = (speech_lengths > 0) | (text_lengths > 0)
+        batch_size = jnp.sum(batch_size)
+
         enc_out, enc_out_lengths = self.encode(speech, speech_lengths, training)
         enc_padded_mask = make_pad_mask(enc_out_lengths, enc_out.shape[1])
         text_padded_mask = make_pad_mask(text_lengths, text.shape[1])
         stats = dict()
-        bsize = (text_lengths > 0) | (speech_lengths > 0)
-        bsize = jnp.sum(bsize)
 
         loss_ctc = loss_att = 0
-        ctc_decoded = ctc_decoded_lengths = att_decoded = None
+        ctc_output = att_decoded = None
         # 1. CTC branch
-        # TODO: Note: we assume that there is an <sos> / <space> at the start of each `text`
-        if self.ctc_weight != 0.:
+        if self.ctc_weight != 0:
             ctc_logits = self.ctc_out_dense(enc_out)
-            loss_ctc = ctc_loss(ctc_logits,
+            loss_ctc = ctc_loss(ctc_logits,  # TODO: test
                                 enc_padded_mask,
-                                text[:, 1:],
-                                text_padded_mask[:, 1:],
+                                text,
+                                text_padded_mask,
                                 blank_id=self.blank_id)  # (bs,)
-            loss_ctc = jnp.sum(loss_ctc) / bsize
+            loss_ctc = jnp.sum(loss_ctc) / batch_size
 
-            arg_max_ctc_logits = jnp.argmax(ctc_logits, axis=-1)
-            ctc_decoded, ctc_decoded_lengths = ctc_decode(arg_max_ctc_logits,
-                                                          enc_out_lengths,
-                                                          self.blank_id,
-                                                          self.ignore_id)
+            ctc_output = jnp.argmax(ctc_logits, axis=-1)
+            # ctc_output = jnp.where(enc_padded_mask, self.ignore_id, ctc_output)
+            # ctc_decoded, ctc_decoded_lengths = ctc_decode(arg_max_ctc_logits,
+            #                                               enc_out_lengths,
+            #                                               self.blank_id,
+            #                                               self.ignore_id)
             stats['loss_ctc'] = loss_ctc
 
         # 2. Attention decoder branch
-        if self.ctc_weight != 1.:
+        if self.ctc_weight != 1:
             loss_att, acc_att, att_decoded = self.calculate_decoder_loss(enc_out,
                                                                          enc_out_lengths,
                                                                          text,
@@ -131,11 +134,7 @@ class ESPnetASRModel(AbsESPnetModel):
 
         loss = self.ctc_weight * loss_ctc + (1 - self.ctc_weight) * loss_att
         stats['loss'] = loss
-        return loss, stats, bsize, ESPnetASRModelOutputAux(ctc_decoded,
-                                                           ctc_decoded_lengths,
-                                                           att_decoded,
-                                                           text[:, 1:],
-                                                           text_lengths - 1)  # ignore <eos>
+        return loss, stats, batch_size, ESPnetASRModelOutputAux(ctc_output, enc_out_lengths, att_decoded)
 
     def calculate_decoder_loss(self,
                                encoder_out: Array,
@@ -143,15 +142,16 @@ class ESPnetASRModel(AbsESPnetModel):
                                targets: Array,
                                targets_lengths: Array,
                                training: bool):
-        # TODO: Note: we assume here that there is an <sos> at the start of each `text`
-        inputs = targets.at[:, 0].set(self.sos_id)
-        targets = shift_left(targets, self.ignore_id)
-        targets = targets.at[list(range(targets.shape[0])), targets_lengths - 1].set(self.eos_id)
+        # assume a position is reserved for <sos> / <eos>, to deal with the static shape requirement of XLA compiler
+        inputs = shift_right(targets, self.sos_id)
+        targets = targets.at[list(range(targets.shape[0])), targets_lengths].set(self.eos_id)
+
         batch_size = (encoder_out_lengths > 0) | (targets_lengths > 0)
         batch_size = jnp.sum(batch_size)
 
+        targets_lengths = jnp.where(targets_lengths > 0, targets_lengths + 1, 0)
+
         # 1. forward decoder
-        # TODO: support weight tying
         decoder_out, _ = self.decoder(inputs,
                                       targets_lengths,
                                       encoder_out,
@@ -159,7 +159,6 @@ class ESPnetASRModel(AbsESPnetModel):
                                       not training,
                                       decode=False)
         targets_mask = ~make_pad_mask(targets_lengths, targets.shape[1])
-        targets_mask = targets_mask.astype(int)
 
         loss_att = self.criterion_att(jax.nn.log_softmax(decoder_out),
                                       targets,
@@ -168,7 +167,8 @@ class ESPnetASRModel(AbsESPnetModel):
             loss_att = loss_att / batch_size
         att_decoded = jnp.argmax(decoder_out, axis=-1) * targets_mask
         acc_att = att_decoded == targets
-        acc_att = jnp.sum(acc_att * targets_mask) / jnp.sum(targets_mask)
+        acc_att = jnp.where(targets_mask, acc_att, 0)
+        acc_att = jnp.sum(acc_att) / jnp.sum(targets_mask)
 
         return loss_att, acc_att, att_decoded
 
@@ -212,63 +212,55 @@ class ESPnetASRModel(AbsESPnetModel):
     def build_evaluator(
             self,
             token_list: Union[Tuple[str, ...], List[str]]
-    ) -> Callable[[float, Dict[str, Any], float, ESPnetASRModelOutputAux], Dict[str, Any]]:
+    ) -> Callable[..., Dict[str, Any]]:
         # error_calculator use -1 as padding idx
-        error_calculator = ErrorCalculator(
-            token_list.copy(), self.sym_space, self.sym_blank, self.report_cer, self.report_wer
-        )
+        # error_calculator = ErrorCalculator(
+        #     token_list.copy(), self.sym_space, self.sym_blank, self.report_cer, self.report_wer
+        # )
 
-        def convert2char(arr, arr_len):
-            ret = []
-            for x, xlen in zip(arr, arr_len):
-                x = x[:xlen]
-                ret.append(''.join(map(token_list.__getitem__, x)))
-            return ret
+        ec = ASRErrorCalculator(token_list.copy(), blank_id=self.blank_id, space_sym=self.sym_space)
 
         def evaluate(
                 loss: float,
                 stats: Dict[str, Any],
                 weight: float,
                 aux: ESPnetASRModelOutputAux,
+
+                # input to __call__
+                speech: Array,
+                speech_lengths: Array,
+                text: Array,
+                text_lengths: Array,
                 return_decoded: Optional[bool] = False
         ) -> Dict[str, Any]:
 
             bsize = weight
-            aux = tree_map(lambda arr: arr[:bsize], aux)
+            aux, text, text_lengths = tree_map(
+                lambda arr: arr[:bsize], (aux, text, text_lengths)
+            )
+            ctc_output, ctc_out_lengths, att_decoded = aux.ctc_output, aux.ctc_output_lengths, aux.attention_decoded
 
-            (ctc_decoded,
-             ctc_decoded_lens,
-             att_decoded,
-             text,
-             text_lengths) = (aux.ctc_decoded,
-                              aux.ctc_decoded_lens,
-                              aux.attention_decoded,
-                              aux.targets,
-                              aux.targets_lens)
-
-            text_maxlen = np.max(text_lengths)
-            text = text[:, :text_maxlen]
-            text_str = convert2char(text, text_lengths)
+            text_str = ec.batch_tokens2str(text, text_lengths)
 
             decoded = dict(text_str=text_str)
-            if ctc_decoded is not None:
-                ctc_decoded = ctc_decoded[:, :np.max(ctc_decoded_lens)]
-                ctc_decoded_str = convert2char(ctc_decoded, ctc_decoded_lens)
-                stats['cer_ctc'] = error_calculator.calculate_cer(ctc_decoded_str, text_str)
-                stats['wer_ctc'] = error_calculator.calculate_wer(ctc_decoded_str, text_str)
-                decoded['ctc_decoded_str'] = ctc_decoded_str
+            if ctc_output is not None:
+                ctc_str = ec.batch_ctc_decode_str(ctc_output, ctc_out_lengths)
+                decoded['ctc_str'] = ctc_str
+
+                # tmp = tuple(map(lambda arr: arr[1:], text_str))
+
+                stats['cer_ctc'] = ec.calculate_cer(ctc_str, text_str)
+                stats['wer_ctc'] = ec.calculate_wer(ctc_str, text_str)
 
             if att_decoded is not None:
-                att_decoded = att_decoded[:, :text_maxlen]
-                att_decoded_str = convert2char(att_decoded, text_lengths)
-                stats['wer'] = error_calculator.calculate_wer(att_decoded_str, text_str)
-                stats['cer'] = error_calculator.calculate_cer(att_decoded_str, text_str)
-                decoded['att_decoded_str'] = att_decoded_str
+                att_str = ec.batch_tokens2str(att_decoded, text_lengths)
+                decoded['att_str'] = att_str
+                stats['cer'] = ec.calculate_cer(att_str, text_str)
+                stats['wer'] = ec.calculate_wer(att_str, text_str)
 
             if return_decoded:
+                decoded['ctc_original'] = ec.batch_tokens2str(ctc_output, ctc_out_lengths)
                 # return stats, ctc_decoded_str, att_decoded_str, text_str
                 return stats, decoded
-
             return stats
-
         return evaluate

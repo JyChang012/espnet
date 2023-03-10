@@ -11,10 +11,13 @@ from jax.nn.initializers import Initializer, glorot_uniform
 
 from espnex.asr.encoder.abc import AbsEncoder
 from espnex.asr.frontend.abc import AbsFrontend
+from espnex.asr.utils import ASRErrorCalculator
 from espnex.train.abs_espnex_model import AbsESPnetModel
 from espnex.models.utils import make_pad_mask, inject_args
 from espnet.nets.e2e_asr_common import ErrorCalculator
 from espnex.asr.ctc import ctc_decode
+
+logger = logging.getLogger('ESPNex')
 
 
 class CTCASRModel(AbsESPnetModel):
@@ -23,9 +26,9 @@ class CTCASRModel(AbsESPnetModel):
     frontend: Optional[AbsFrontend]
     encoder: AbsEncoder
     ignore_id: int = -1
-    length_normalized_loss: bool = False
-    report_cer: bool = True
-    report_wer: bool = True
+    # length_normalized_loss: bool = False
+    # report_cer: bool = True
+    # report_wer: bool = True
     blank_id: int = 0
     sym_space: str = "<space>"
     sym_blank: str = "<blank>"
@@ -34,12 +37,15 @@ class CTCASRModel(AbsESPnetModel):
     sym_sos: str = "<sos/eos>"
     sym_eos: str = "<sos/eos>"
     extract_feats_in_collect_stats: bool = True
-    lang_token_id: int = -1
+    # lang_token_id: int = -1
     kernel_init: Optional[Initializer] = None
 
     def setup(self) -> None:
         dense = inject_args(Dense, kernel_init=self.kernel_init)
-        self.out_dense = dense(self.vocab_size)
+        self.ctc_out_dense = dense(self.vocab_size)
+
+        if self.is_initializing():
+            logger.info(str(self))
 
     def __call__(
             self,
@@ -55,22 +61,20 @@ class CTCASRModel(AbsESPnetModel):
         batch_size = jnp.sum(batch_size)
 
         enc_out, enc_out_lengths = self.encode(speech, speech_lengths, training)
-        enc_out = self.out_dense(enc_out)
+        enc_out = self.ctc_out_dense(enc_out)
         enc_padded_mask = make_pad_mask(enc_out_lengths, enc_out.shape[1])
-        self.sow('intermediates', 'enc_out', enc_out)
-        self.sow('intermediates', 'enc_out_len', enc_out_lengths)
-        self.sow('intermediates', 'text', text)
-        self.sow('intermediates', 'text_len', text_lengths)
-        # enc_padded_mask = enc_padded_mask.astype('float')
         text_padded_mask = make_pad_mask(text_lengths, text.shape[1])
-        losses = ctc_loss(enc_out, enc_padded_mask, text, text_padded_mask)  # (bs,)
+
+        losses = ctc_loss(enc_out,
+                          enc_padded_mask,
+                          text,
+                          text_padded_mask,
+                          blank_id=self.blank_id)  # (bs,)
         loss = jnp.sum(losses) / batch_size
 
         arg_max_enc_out = jnp.argmax(enc_out, axis=-1)
         decoded, decoded_length = ctc_decode(arg_max_enc_out, enc_out_lengths, self.blank_id, self.ignore_id)
-        self.sow('intermediates', 'decoded', decoded)
-        self.sow('intermediates', 'decoded_len', decoded_length)
-        self.sow('intermediates', 'enc_out_argmax', arg_max_enc_out)
+
         return loss, {'loss': loss}, batch_size, (decoded, decoded_length, text, text_lengths)
 
     def _extract_feats(
@@ -121,22 +125,25 @@ class CTCASRModel(AbsESPnetModel):
             token_list: Union[Tuple[str, ...], List[str]]
     ) -> Callable[[float, Dict[str, Any], float, Any], Dict[str, Any]]:
         # error_calculator use -1 as padding idx
-        error_calculator = ErrorCalculator(
-            token_list.copy(), self.sym_space, self.sym_blank, self.report_cer, self.report_wer
+        ec = ASRErrorCalculator(
+            token_list.copy(), space_sym=self.sym_space, blank_id=self.blank_id
         )
 
-        def convert2char(arr, arr_len):
-            ret = []
-            for x, xlen in zip(arr, arr_len):
-                x = x[:xlen]
-                ret.append(''.join(map(token_list.__getitem__, x)))
-            return ret
+        # ec = ErrorCalculator(token_list, self.sym_space, self.sym_blank, True, True)
+        ec = ErrorCalculator(token_list, '<space>', self.sym_blank, True, True)
+        # for reproducing original result, we hardcode sym_space here like old ESPNet
 
         def evaluate(
                 loss: float,
                 stats: Dict[str, Any],
                 weight: float,
                 aux: Tuple[ndarray, ndarray, ndarray, ndarray],
+
+                # input to __call__
+                speech: Array,
+                speech_lengths: Array,
+                text: Array,
+                text_lengths: Array,
                 return_decoded: Optional[bool] = False
         ) -> Dict[str, Any]:
 
@@ -147,17 +154,12 @@ class CTCASRModel(AbsESPnetModel):
 
             decoded, decoded_length, text, text_lengths = aux
 
-            decoded = decoded[:, :np.max(decoded_length)]
-            text = text[:, :np.max(text_lengths)]
 
-            decoded_str = convert2char(decoded, decoded_length)
-            text_str = convert2char(text, text_lengths)
+            decoded_str = ec.batch_tokens2str(decoded, decoded_length)
+            text_str = ec.batch_tokens2str(text, text_lengths)
 
-            # filter out empty text_str
-            decoded_str, text_str = zip(*((d, t) for d, t in zip(decoded_str, text_str) if t))
-
-            cer = error_calculator.calculate_cer(decoded_str, text_str)
-            wer = error_calculator.calculate_wer(decoded_str, text_str)
+            cer = ec.calculate_cer(decoded_str, text_str)
+            wer = ec.calculate_wer(decoded_str, text_str)
 
             stats.update(dict(
                 wer=wer,

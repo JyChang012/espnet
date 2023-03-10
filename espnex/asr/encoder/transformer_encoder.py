@@ -1,3 +1,4 @@
+import logging
 from functools import partial
 from typing import List, Literal, Optional, Tuple, Type, overload
 
@@ -31,6 +32,7 @@ from espnex.typing import OptionalArray
 
 # from torch.nn.functional import ctc_loss
 
+logger = logging.getLogger('ESPNex')
 
 class TransformerEncoder(AbsEncoder):
     output_size: int = 256  # inherit from superclass
