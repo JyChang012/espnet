@@ -918,9 +918,10 @@ class AbsTask(ABC):
         _rank = 0  # TODO: distributed is not supported currently, rank is always 0
 
         # config logger
+        logger.propagate = False
         logger.setLevel(args.log_level)
         handler = logging.StreamHandler()
-        handler.setLevel(logging.DEBUG)
+        handler.setLevel(args.log_level)
         formatter = logging.Formatter(f"[{os.uname()[1].split('.')[0]}{_rank}]"
                                       f" %(asctime)s (%(module)s:%(lineno)d) %(levelname)s: %(message)s")
         handler.setFormatter(formatter)

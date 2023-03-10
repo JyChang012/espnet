@@ -415,6 +415,8 @@ class ASRTask(AbsTask):
         except AttributeError:
             model_class = model_choices.get_class("espnet")
         sos_eos_id = token_list.index("<sos/eos>")
+        blank_id = token_list.index('<blank>')
+        sym_space = '▁'  # TODO: remove hardcoded symbol
         model = inject_args(
             model_class,
             vocab_size=vocab_size,
@@ -424,6 +426,8 @@ class ASRTask(AbsTask):
             kernel_init=initializer,
             sos_id=sos_eos_id,
             eos_id=sos_eos_id,
+            sym_space=sym_space,
+            blank_id=blank_id,
             **args.model_conf
         )()
 
