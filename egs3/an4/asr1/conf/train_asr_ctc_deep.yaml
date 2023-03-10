@@ -3,8 +3,7 @@ batch_size: 64
 accum_grad: 1
 max_epoch: 200
 patience: none
-# The initialization method for model parameters
-init: xavier_uniform
+init: xavier_uniform # The initialization method for model parameters
 best_model_criterion:
 -   - valid
     - acc
