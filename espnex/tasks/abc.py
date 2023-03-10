@@ -3,6 +3,7 @@ import os
 import sys
 from abc import abstractmethod, ABC
 import argparse
+from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Tuple, Optional, Callable, Dict, Sequence, Any, Union
 
@@ -25,7 +26,6 @@ from espnet2.iterators.abs_iter_factory import AbsIterFactory
 from espnet2.iterators.chunk_iter_factory import ChunkIterFactory
 from espnet2.iterators.sequence_iter_factory import SequenceIterFactory
 from espnet2.samplers.unsorted_batch_sampler import UnsortedBatchSampler
-from espnet2.tasks.abs_task import IteratorOptions
 from espnet2.torch_utils.set_all_random_seed import set_all_random_seed
 from espnet2.train.distributed_utils import DistributedOption
 from espnet2.train.iterable_dataset import IterableESPnetDataset
@@ -75,6 +75,23 @@ scheduler_classes = dict(
 # To lower keys
 optim_classes = {k.lower(): v for k, v in optim_classes.items()}
 scheduler_classes = {k.lower(): v for k, v in scheduler_classes.items()}
+
+
+@dataclass
+class IteratorOptions:
+    preprocess_fn: callable
+    collate_fn: callable
+    data_path_and_name_and_type: list
+    shape_files: list
+    batch_size: int
+    batch_bins: int
+    batch_type: str
+    max_cache_size: float
+    max_cache_fd: int
+    distributed: bool
+    num_batches: Optional[int]
+    num_iters_per_epoch: Optional[int]
+    train: bool
 
 
 class AbsTask(ABC):

@@ -11,6 +11,7 @@ from typeguard import check_argument_types, check_return_type
 from jax.nn.initializers import Initializer, glorot_uniform, glorot_normal, he_normal, he_uniform
 
 from espnet2.train.class_choices import ClassChoices
+from espnet2.train.preprocessor import CommonPreprocessor, CommonPreprocessor_multi, AbsPreprocessor
 from espnet2.utils.get_default_kwargs import get_default_kwargs
 from espnet2.utils.nested_dict_action import NestedDictAction
 from espnet2.text.phoneme_tokenizer import g2p_choices
@@ -27,7 +28,7 @@ from espnex.models.utils import inject_args
 from espnex.tasks.abc import AbsTask
 from espnex.train.abs_espnex_model import AbsESPnetModel
 from espnex.train.collate_fn import CommonCollateFn
-from espnet2.tasks.asr import preprocessor_choices
+
 
 logger = logging.getLogger('ESPNex')
 
@@ -77,6 +78,16 @@ decoder_choices = ClassChoices(
     type_check=AbsDecoder,
     default="transformer",
     optional=True,  # TODO: optional decoder
+)
+
+preprocessor_choices = ClassChoices(
+    "preprocessor",
+    classes=dict(
+        default=CommonPreprocessor,
+        multi=CommonPreprocessor_multi,
+    ),
+    type_check=AbsPreprocessor,
+    default="default",
 )
 
 
