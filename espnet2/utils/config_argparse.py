@@ -17,8 +17,9 @@ class ArgumentParser(argparse.ArgumentParser):
 
     """
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, ignore_unrecognized: bool = False, **kwargs):
         super().__init__(*args, **kwargs)
+        self.ignore_unrecognized = ignore_unrecognized
         self.add_argument("--config", help="Give config file in yaml format")
 
     def parse_known_args(self, args=None, namespace=None):
@@ -32,13 +33,13 @@ class ArgumentParser(argparse.ArgumentParser):
                 d = yaml.safe_load(f)
             if not isinstance(d, dict):
                 self.error("Config file has non dict value: {_args.config}")
-
-            for key in d:
-                for action in self._actions:
-                    if key == action.dest:
-                        break
-                else:
-                    self.error(f"unrecognized arguments: {key} (from {_args.config})")
+            if not self.ignore_unrecognized:
+                for key in d:
+                    for action in self._actions:
+                        if key == action.dest:
+                            break
+                    else:
+                        self.error(f"unrecognized arguments: {key} (from {_args.config})")
 
             # NOTE(kamo): Ignore "--config" from a config file
             # NOTE(kamo): Unlike "configargparse", this module doesn't check type.

@@ -1,0 +1,38 @@
+batch_type: folded
+batch_size: 64
+accum_grad: 1
+max_epoch: 200
+patience: none
+# The initialization method for model parameters
+init: xavier_uniform
+best_model_criterion:
+-   - valid
+    - acc
+    - max
+keep_nbest_models: 10
+num_att_plot: 0
+num_workers: 1   # number of workers in dataloader
+
+
+encoder: transformer
+encoder_conf:
+    output_size: 256
+    attention_heads: 4
+    linear_units: 1024
+    num_blocks: 12
+    dropout_rate: 0.1
+    positional_dropout_rate: 0.1
+    attention_dropout_rate: 0.1
+    input_layer: conv2d
+    normalize_before: true
+
+model: ctcasr
+model_conf:
+    length_normalized_loss: false
+
+optim: adam
+
+scheduler: warmuplr
+scheduler_conf:
+    peak_lr: 0.001
+    warmup_steps: 800
